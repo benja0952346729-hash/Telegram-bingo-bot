@@ -4,8 +4,12 @@
 ║                                                                  ║
 ║  ✅ User deposit → screenshot ይልካል                              ║
 ║  ✅ SMS Forwarder → real bank SMS bot ላይ ይልካል                   ║
-║  ✅ Bot screenshot amount vs SMS amount ያነፃፅራል                  ║
-║  ✅ Match → Auto Approve,  No Match → Auto Reject                ║
+║  ✅ Amount ±5% + Ref match → Auto Approve                        ║
+║  ✅ SMS ቀድሞ ቢገባ → 5 min ይጠብቃል → screenshot ቢመጣ approve       ║
+║  ✅ Screenshot ቀድሞ ቢገባ → 5 min ይጠብቃል → SMS ቢመጣ approve       ║
+║  ✅ Screenshot 5 min, SMS 30 min → Auto Cancel                   ║
+║  ✅ Cancel → screenshot hash ይሰርዛል (እንደገና መላክ ይቻላል)           ║
+║  ✅ FIFO → ቀድሞ screenshot የላከ ቀድሞ approve ይሆናል               ║
 ║  ✅ Duplicate ref/hash detection                                 ║
 ║  ✅ Date check (ዛሬ ብቻ valid)                                    ║
 ║  ✅ CBE account number check                                     ║
@@ -59,6 +63,12 @@ MAX_WITHDRAWAL   = 5000
 
 DAILY_REPORT_HOUR   = 20
 DAILY_REPORT_MINUTE = 0
+
+# ✅ Screenshot timeout (seconds) — 5 minutes
+SCREENSHOT_TIMEOUT = 5 * 60   # 5 minutes
+
+# ✅ SMS timeout (seconds) — 30 minutes
+SMS_TIMEOUT = 30 * 60          # 30 minutes
 
 # ══════════════════════════════════════════════════════
 #  🌐 FLASK KEEP-ALIVE
@@ -142,6 +152,20 @@ def has_pending(uid: str) -> bool:
         if str(p.get("user_id")) == uid and p.get("status") == "pending":
             return True
     return False
+
+# ══════════════════════════════════════════════════════
+#  💰 AMOUNT MATCH (±5% tolerance)
+# ══════════════════════════════════════════════════════
+def amounts_match(expected: float, actual: float) -> bool:
+    """
+    ±5% tolerance
+    ለምሳሌ: 50 ብር deposit → 47.5 እስከ 52.5 ብር SMS = match
+    """
+    if expected == 0:
+        return False
+    diff = abs(expected - actual)
+    percent = diff / expected * 100
+    return percent <= 5
 
 # ══════════════════════════════════════════════════════
 #  📲 SMS PARSER
@@ -256,6 +280,122 @@ def send_menu(chat_id):
         reply_markup=kb)
 
 # ══════════════════════════════════════════════════════
+#  ✅ AUTO APPROVE helper
+# ══════════════════════════════════════════════════════
+def do_approve(pid: str, uid: str, sms_amount: float, sms: dict):
+    """Payment approve ያደርጋል — SMS + Screenshot match ሲሆን ይጠራል"""
+    bal = fb_get(f"users/{uid}/balance") or 0
+    new_bal = bal + int(sms_amount)
+
+    fb_set(f"users/{uid}/balance", new_bal)
+    fb_set(f"payments/{pid}/status", "approved")
+    fb_set(f"payments/{pid}/verified", True)
+    fb_set(f"payments/{pid}/sms_ref", sms.get("ref"))
+    fb_set(f"payments/{pid}/sms_bank", sms.get("bank"))
+    fb_set(f"payments/{pid}/sms_sender", sms.get("sender"))
+    fb_set(f"temp/{uid}", None)
+
+    if sms.get("ref"):
+        save_ref(sms["ref"], uid, int(sms_amount))
+
+    dep_snap = fb_get("analytics/totalDeposits") or 0
+    fb_set("analytics/totalDeposits", dep_snap + int(sms_amount))
+
+    try:
+        bot.send_message(int(uid),
+            f"✅ <b>Deposit Approved!</b>\n\n"
+            f"💰 {int(sms_amount)} ብር ታከለ\n"
+            f"🏦 {sms.get('bank')} — {sms.get('sender')}\n"
+            f"📋 Ref: <code>{sms.get('ref')}</code>\n\n"
+            f"💼 New Balance: <b>{new_bal} ብር</b>")
+    except Exception as e:
+        print(f"User notify error: {e}")
+
+    pay = fb_get(f"payments/{pid}") or {}
+    display = pay.get("display") or uid
+    bot.send_message(ADMIN_ID,
+        f"✅ <b>Auto Approved!</b>\n\n"
+        f"👤 {display} (<code>{uid}</code>)\n"
+        f"💰 {int(sms_amount)} ብር\n"
+        f"🏦 {sms.get('bank')} — {sms.get('sender')}\n"
+        f"📋 Ref: <code>{sms.get('ref')}</code>")
+
+    print(f"✅ Auto approved: {uid} → {sms_amount} ብር ({sms.get('ref')})")
+
+
+# ══════════════════════════════════════════════════════
+#  ⏰ TIMEOUT CHECKER — background thread
+#  ቀድሞ የደረሰ SMS ወይም Screenshot 5 min ካለፈ cancel ያደርጋል
+# ══════════════════════════════════════════════════════
+def timeout_checker():
+    while True:
+        try:
+            now_ts = datetime.now().timestamp()
+
+            # ── 1. Pending SMS timeout ──
+            # SMS ደረሰ ግን screenshot አልደረሰም → 30 min cancel
+            pending_sms_list = fb_get("bot/pending_sms") or {}
+            for sms_key, sms_data in list(pending_sms_list.items()):
+                saved_at = sms_data.get("saved_at", 0)
+                if now_ts - saved_at > SMS_TIMEOUT:
+                    ref    = sms_data.get("ref", sms_key)
+                    amount = sms_data.get("amount", 0)
+                    bank   = sms_data.get("bank", "")
+                    fb_set(f"bot/pending_sms/{sms_key}", None)
+                    bot.send_message(ADMIN_ID,
+                        f"⏰ <b>SMS Timeout — Auto Cancelled</b>\n\n"
+                        f"🏦 {bank}\n"
+                        f"💰 {amount} ብር\n"
+                        f"📋 Ref: <code>{ref}</code>\n\n"
+                        f"30 ደቂቃ ካለፈ screenshot አልደረሰም")
+                    print(f"⏰ SMS timeout cancelled: {ref}")
+
+            # ── 2. Pending Screenshot timeout ──
+            # Screenshot ደረሰ ግን SMS አልደረሰም → 5 min cancel
+            payments = fb_get("payments") or {}
+            for pid, pay in list(payments.items()):
+                if pay.get("status") != "pending":
+                    continue
+                pay_time = pay.get("time", 0) / 1000  # ms → seconds
+                if now_ts - pay_time > SCREENSHOT_TIMEOUT:
+                    uid     = str(pay.get("user_id"))
+                    amount  = pay.get("amount", 0)
+                    display = pay.get("display") or uid
+
+                    fb_set(f"payments/{pid}/status", "cancelled")
+                    fb_set(f"temp/{uid}", None)
+
+                    # ✅ Cancel ሲሆን hash ይሰርዛል — እንደገና መላክ ይቻላል
+                    file_id = pay.get("file_id")
+                    if file_id:
+                        h = hash_file(file_id)
+                        fb_set(f"bot/used_hashes/{h}", None)
+
+                    try:
+                        bot.send_message(int(uid),
+                            f"⏰ <b>Deposit Cancelled</b>\n\n"
+                            f"💰 {amount} ብር\n\n"
+                            f"SMS 5 ደቂቃ ውስጥ አልደረሰም\n"
+                            f"እንደገና ሞክር ወይም Admin ያናግሩ @admin")
+                    except Exception as e:
+                        print(f"User timeout notify error: {e}")
+
+                    bot.send_message(ADMIN_ID,
+                        f"⏰ <b>Screenshot Timeout — Auto Cancelled</b>\n\n"
+                        f"👤 {display} (<code>{uid}</code>)\n"
+                        f"💰 {amount} ብር\n\n"
+                        f"5 ደቂቃ ካለፈ SMS አልደረሰም")
+                    print(f"⏰ Screenshot timeout cancelled: {pid} → {uid}")
+
+        except Exception as e:
+            print(f"Timeout checker error: {e}")
+
+        time.sleep(30)  # every 30 seconds check
+
+threading.Thread(target=timeout_checker, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════
 #  COMMANDS
 # ══════════════════════════════════════════════════════
 @bot.message_handler(commands=["start"])
@@ -289,7 +429,6 @@ def clear_pending(m):
         return
     uid = parts[1]
     fb_set(f"temp/{uid}", None)
-    # Cancel all pending payments for this user
     payments = fb_get("payments") or {}
     count = 0
     for pid, pay in payments.items():
@@ -367,42 +506,105 @@ def handle_screenshot(m):
     # Save screenshot hash
     save_screenshot_hash(file_id, uid, amount)
 
-    # Save pending payment to Firebase
-    result = fb_push("payments", {
-        "user_id":  uid,
-        "display":  m.from_user.username or m.from_user.first_name or uid,
-        "amount":   amount,
-        "file_id":  file_id,
-        "status":   "pending",
-        "time":     int(datetime.now().timestamp() * 1000),
-        "verified": False,
-    })
+    # ── Check if matching SMS already exists (SMS ቀድሞ ከደረሰ) ──
+    # ref ወይም amount ±5% match ፈልግ
+    pending_sms_list = fb_get("bot/pending_sms") or {}
 
-    if not result:
-        bot.send_message(m.chat.id, "❌ Error! እንደገና ሞክር")
-        return
+    matched_sms_key  = None
+    matched_sms_data = None
 
-    pid = result.key
+    # FIFO — ቀድሞ የደረሰ SMS ቀድሞ ይወሰዳል (saved_at ትንሹ)
+    sorted_sms = sorted(
+        pending_sms_list.items(),
+        key=lambda x: x[1].get("saved_at", 0)
+    )
 
-    fb_set(f"temp/{uid}/pid", pid)
-    fb_set(f"temp/{uid}/file_id", file_id)
+    for sms_key, sms_data in sorted_sms:
+        sms_amount = sms_data.get("amount", 0)
+        sms_ref    = sms_data.get("ref", "")
 
-    bot.send_message(m.chat.id,
-        f"📸 Screenshot ተቀብሏል!\n"
-        f"💰 <b>{amount} ብር</b>\n\n"
-        f"⏳ SMS verification እየጠበቀ ነው...\n"
-        f"ብዙ አይቆይም ✅")
+        # ref match (ትክክለኛ match)
+        if sms_ref and temp.get("ref") and sms_ref == temp.get("ref"):
+            matched_sms_key  = sms_key
+            matched_sms_data = sms_data
+            break
 
-    # Notify admin
-    name = m.from_user.username or m.from_user.first_name
-    try:
-        bot.send_photo(ADMIN_ID, file_id,
-            caption=f"📸 <b>New Screenshot</b>\n"
-                    f"👤 {name} (<code>{uid}</code>)\n"
-                    f"💰 {amount} ብር\n"
-                    f"⏳ SMS verification pending...")
-    except Exception as e:
-        print(f"Admin notify error: {e}")
+        # amount ±5% match (ref ከሌለ)
+        if amounts_match(float(amount), float(sms_amount)):
+            matched_sms_key  = sms_key
+            matched_sms_data = sms_data
+            break
+
+    if matched_sms_key and matched_sms_data:
+        # ── SMS ቀድሞ ደርሷል → ወዲያውኑ Approve ──
+        result = fb_push("payments", {
+            "user_id":  uid,
+            "display":  m.from_user.username or m.from_user.first_name or uid,
+            "amount":   amount,
+            "file_id":  file_id,
+            "status":   "pending",
+            "time":     int(datetime.now().timestamp() * 1000),
+            "verified": False,
+        })
+        if not result:
+            bot.send_message(m.chat.id, "❌ Error! እንደገና ሞክር")
+            return
+
+        pid = result.key
+
+        # Matched SMS ን ከ pending_sms ሰርዝ
+        fb_set(f"bot/pending_sms/{matched_sms_key}", None)
+
+        sms_obj = {
+            "bank":   matched_sms_data.get("bank"),
+            "amount": matched_sms_data.get("amount"),
+            "sender": matched_sms_data.get("sender"),
+            "ref":    matched_sms_data.get("ref"),
+        }
+
+        do_approve(pid, uid, matched_sms_data.get("amount", amount), sms_obj)
+
+        bot.send_message(m.chat.id,
+            f"✅ <b>Deposit Approved!</b>\n"
+            f"💰 {int(matched_sms_data.get('amount', amount))} ብር ታከለ\n"
+            f"🏦 {matched_sms_data.get('bank')} — {matched_sms_data.get('sender')}")
+
+    else:
+        # ── SMS ገና አልደረሰም → Pending ሆኖ ይጠብቃል (5 min) ──
+        result = fb_push("payments", {
+            "user_id":  uid,
+            "display":  m.from_user.username or m.from_user.first_name or uid,
+            "amount":   amount,
+            "file_id":  file_id,
+            "status":   "pending",
+            "time":     int(datetime.now().timestamp() * 1000),
+            "verified": False,
+        })
+
+        if not result:
+            bot.send_message(m.chat.id, "❌ Error! እንደገና ሞክር")
+            return
+
+        pid = result.key
+        fb_set(f"temp/{uid}/pid", pid)
+        fb_set(f"temp/{uid}/file_id", file_id)
+
+        bot.send_message(m.chat.id,
+            f"📸 Screenshot ተቀብሏል!\n"
+            f"💰 <b>{amount} ብር</b>\n\n"
+            f"⏳ SMS verification እየጠበቀ ነው...\n"
+            f"ከ5 ደቂቃ ውስጥ SMS ካልደረሰ auto cancel ይሆናል ⚠️")
+
+        # Notify admin
+        name = m.from_user.username or m.from_user.first_name
+        try:
+            bot.send_photo(ADMIN_ID, file_id,
+                caption=f"📸 <b>New Screenshot</b>\n"
+                        f"👤 {name} (<code>{uid}</code>)\n"
+                        f"💰 {amount} ብር\n"
+                        f"⏳ SMS verification pending...")
+        except Exception as e:
+            print(f"Admin notify error: {e}")
 
 # ══════════════════════════════════════════════════════
 #  📨 SMS FORWARDER MESSAGE HANDLER
@@ -453,69 +655,59 @@ def handle_forwarded_sms(m):
         return
 
     # ── Find matching pending payment ──
+    # FIFO — ቀድሞ screenshot የላከ ቀድሞ ይወሰዳል (time ትንሹ)
     payments = fb_get("payments") or {}
+
     matched_pid  = None
     matched_uid  = None
     matched_pay  = None
 
-    for pid, pay in payments.items():
-        if pay.get("status") != "pending":
-            continue
-        pay_amount = pay.get("amount", 0)
-        if abs(float(pay_amount) - sms_amount) <= 1:
+    # Sort by time ascending (FIFO)
+    sorted_payments = sorted(
+        [(pid, p) for pid, p in payments.items() if p.get("status") == "pending"],
+        key=lambda x: x[1].get("time", 0)
+    )
+
+    for pid, pay in sorted_payments:
+        pay_amount = float(pay.get("amount", 0))
+
+        # ── ref match (ትክክለኛ match — unique) ──
+        if sms_ref and pay.get("ref") and pay.get("ref") == sms_ref:
             matched_pid = pid
             matched_uid = str(pay.get("user_id"))
             matched_pay = pay
             break
 
-    # ── No match found ──
+        # ── amount ±5% match ──
+        if amounts_match(pay_amount, sms_amount):
+            matched_pid = pid
+            matched_uid = str(pay.get("user_id"))
+            matched_pay = pay
+            break
+
+    # ── No match → SMS ቀድሞ ደረሰ → Save ለ5 ደቂቃ ──
     if not matched_pid:
+        sms_key = sms_ref if sms_ref else f"sms_{int(datetime.now().timestamp())}"
+        fb_set(f"bot/pending_sms/{sms_key}", {
+            "bank":     sms_bank,
+            "amount":   sms_amount,
+            "sender":   sms.get("sender"),
+            "ref":      sms_ref,
+            "date":     sms_date,
+            "saved_at": datetime.now().timestamp(),
+        })
+
         bot.send_message(ADMIN_ID,
-            f"⚠️ <b>SMS received ነገር pending payment አልተገኘም</b>\n\n"
+            f"📥 <b>SMS Saved — Waiting for Screenshot</b>\n\n"
             f"🏦 {sms_bank}\n"
             f"💰 {sms_amount} ብር\n"
             f"👤 {sms.get('sender')}\n"
-            f"📋 Ref: {sms_ref}\n\n"
-            f"Manual አረጋግጥ!")
+            f"📋 Ref: <code>{sms_ref}</code>\n\n"
+            f"⏳ 5 ደቂቃ ውስጥ screenshot ካልደረሰ auto cancel")
         return
 
     # ── MATCH FOUND → AUTO APPROVE ──
-    bal = fb_get(f"users/{matched_uid}/balance") or 0
-    fb_set(f"users/{matched_uid}/balance", bal + int(sms_amount))
-    fb_set(f"payments/{matched_pid}/status", "approved")
-    fb_set(f"payments/{matched_pid}/verified", True)
-    fb_set(f"payments/{matched_pid}/sms_ref", sms_ref)
-    fb_set(f"payments/{matched_pid}/sms_bank", sms_bank)
-    fb_set(f"payments/{matched_pid}/sms_sender", sms.get("sender"))
-
-    if sms_ref:
-        save_ref(sms_ref, matched_uid, int(sms_amount))
-
-    dep_snap = fb_get("analytics/totalDeposits") or 0
-    fb_set("analytics/totalDeposits", dep_snap + int(sms_amount))
-
-    fb_set(f"temp/{matched_uid}", None)
-
-    new_bal = bal + int(sms_amount)
-    try:
-        bot.send_message(int(matched_uid),
-            f"✅ <b>Deposit Approved!</b>\n\n"
-            f"💰 {int(sms_amount)} ብር ታከለ\n"
-            f"🏦 {sms_bank} — {sms.get('sender')}\n"
-            f"📋 Ref: <code>{sms_ref}</code>\n\n"
-            f"💼 New Balance: <b>{new_bal} ብር</b>")
-    except Exception as e:
-        print(f"User notify error: {e}")
-
-    display = matched_pay.get("display") or matched_uid
-    bot.send_message(ADMIN_ID,
-        f"✅ <b>Auto Approved!</b>\n\n"
-        f"👤 {display} (<code>{matched_uid}</code>)\n"
-        f"💰 {int(sms_amount)} ብር\n"
-        f"🏦 {sms_bank} — {sms.get('sender')}\n"
-        f"📋 Ref: <code>{sms_ref}</code>")
-
-    print(f"✅ Auto approved: {matched_uid} → {sms_amount} ብር ({sms_ref})")
+    do_approve(matched_pid, matched_uid, sms_amount, sms)
 
 # ══════════════════════════════════════════════════════
 #  📝 TEXT HANDLER
