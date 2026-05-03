@@ -11,7 +11,8 @@
 ║  ✅ CBE account number check                                     ║
 ║  ✅ Withdrawal flow (CBE / Telebirr / Awash)                     ║
 ║  ✅ Admin daily report @ 8PM                                     ║
-║  ✅ Flask keep-alive (Render.com)                                ║
+║  ✅ Auto-restart on crash                                        ║
+║  ✅ Flask keep-alive (Railway / Render)                          ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 📦 Install:
@@ -24,6 +25,7 @@
 import os
 import re
 import json
+import time
 import hashlib
 import threading
 from datetime import datetime, timedelta
@@ -45,9 +47,12 @@ WEBAPP_URL = "https://bingo-game-4.onrender.com"
 
 FIREBASE_DB_URL = "https://house-rent-app-3674a-default-rtdb.firebaseio.com/"
 
-# ✅ ያንተ CBE account number (last 4 digits ወይም full)
+# ✅ CBE account number
 CBE_ACCOUNT      = "1000641057146"
-CBE_ACCOUNT_LAST = "7146"   # SMS ላይ masked ሆኖ ይታያል
+CBE_ACCOUNT_LAST = "7146"
+
+# ✅ Telebirr ስልክ ቁጥር
+TELEBIRR_ACCOUNT = "0952346729"
 
 MIN_WITHDRAWAL   = 50
 MAX_WITHDRAWAL   = 5000
@@ -82,13 +87,24 @@ else:
 firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
 
 def fb_get(path):
-    return firebase_db.reference(path).get()
+    try:
+        return firebase_db.reference(path).get()
+    except Exception as e:
+        print(f"Firebase get error [{path}]: {e}")
+        return None
 
 def fb_set(path, value):
-    firebase_db.reference(path).set(value)
+    try:
+        firebase_db.reference(path).set(value)
+    except Exception as e:
+        print(f"Firebase set error [{path}]: {e}")
 
 def fb_push(path, value):
-    return firebase_db.reference(path).push(value)
+    try:
+        return firebase_db.reference(path).push(value)
+    except Exception as e:
+        print(f"Firebase push error [{path}]: {e}")
+        return None
 
 # ══════════════════════════════════════════════════════
 #  🔒 ANTI-FRAUD helpers
@@ -110,7 +126,6 @@ def save_screenshot_hash(file_id: str, uid: str, amount: int):
     })
 
 def is_dup_ref(ref_no: str) -> bool:
-    """Bank reference number ቀድሞ ጥቅም ላይ ዋሏል?"""
     used = fb_get("bot/used_refs") or {}
     return ref_no in used
 
@@ -138,25 +153,20 @@ def parse_cbe_sms(text: str) -> dict | None:
     ETB 2,000.00 from Abdimelik Asefa, on 27/04/2026 at 21:38:49
     with Ref No FT26118W65DX Your Current Balance is ETB 2,038.64.
     """
-    # Amount
     amt_m = re.search(r'Credited with ETB ([\d,]+\.?\d*)', text, re.IGNORECASE)
     if not amt_m:
         return None
     amount = float(amt_m.group(1).replace(',', ''))
 
-    # Sender name
     sender_m = re.search(r'from ([A-Za-z ]+),\s*on', text)
     sender = sender_m.group(1).strip() if sender_m else "Unknown"
 
-    # Date
     date_m = re.search(r'on (\d{2}/\d{2}/\d{4})', text)
     sms_date = date_m.group(1) if date_m else None
 
-    # Ref
     ref_m = re.search(r'Ref No ([A-Z0-9]+)', text, re.IGNORECASE)
     ref   = ref_m.group(1) if ref_m else None
 
-    # Account last 4
     acct_m = re.search(r'Account 1\*+(\d{4})', text)
     acct_last = acct_m.group(1) if acct_m else None
 
@@ -176,21 +186,17 @@ def parse_telebirr_sms(text: str) -> dict | None:
     Dear Biniyam You have received ETB 1.00 from almaz ayele(2519****6777)
     on 03/05/2026 12:31:30. Your transaction number is DE35HFZ2FL.
     """
-    # Amount
     amt_m = re.search(r'received ETB ([\d,]+\.?\d*)', text, re.IGNORECASE)
     if not amt_m:
         return None
     amount = float(amt_m.group(1).replace(',', ''))
 
-    # Sender
     sender_m = re.search(r'from ([A-Za-z ]+)\(', text)
     sender = sender_m.group(1).strip() if sender_m else "Unknown"
 
-    # Date
     date_m = re.search(r'on (\d{2}/\d{2}/\d{4})', text)
     sms_date = date_m.group(1) if date_m else None
 
-    # Transaction ref
     ref_m = re.search(r'transaction number is ([A-Z0-9]+)', text, re.IGNORECASE)
     ref   = ref_m.group(1) if ref_m else None
 
@@ -205,7 +211,6 @@ def parse_telebirr_sms(text: str) -> dict | None:
 
 
 def parse_sms(text: str) -> dict | None:
-    """CBE ወይም Telebirr SMS ይለያል"""
     if "Credited with ETB" in text or "has been Credited" in text:
         return parse_cbe_sms(text)
     if "You have received ETB" in text or "received ETB" in text:
@@ -216,12 +221,12 @@ def parse_sms(text: str) -> dict | None:
 def is_today(date_str: str) -> bool:
     """date_str format: DD/MM/YYYY"""
     if not date_str:
-        return True   # date ካልተገኘ pass
+        return True
     try:
         sms_dt = datetime.strptime(date_str, "%d/%m/%Y")
         today  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         diff   = abs((sms_dt - today).days)
-        return diff <= 1   # ዛሬ ወይም ትናንት (timezone issues ስለሚኖር)
+        return diff <= 1
     except Exception:
         return True
 
@@ -229,9 +234,6 @@ def is_today(date_str: str) -> bool:
 #  🤖 BOT
 # ══════════════════════════════════════════════════════
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-
-# ── Pending deposits: uid → {amount, file_id, pid} ──
-# Firebase temp ይጠቀማል
 
 def send_menu(chat_id):
     kb = InlineKeyboardMarkup()
@@ -276,6 +278,61 @@ def cmd_balance(m):
         text += f"\n⏳ Pending Withdrawal: {pending_wd} ብር"
     bot.send_message(m.chat.id, text)
 
+# ── Admin: Clear pending for a user ──
+@bot.message_handler(commands=["clearpending"])
+def clear_pending(m):
+    if m.chat.id != ADMIN_ID:
+        return
+    parts = m.text.split()
+    if len(parts) < 2:
+        bot.send_message(m.chat.id, "Usage: /clearpending <user_id>")
+        return
+    uid = parts[1]
+    fb_set(f"temp/{uid}", None)
+    # Cancel all pending payments for this user
+    payments = fb_get("payments") or {}
+    count = 0
+    for pid, pay in payments.items():
+        if str(pay.get("user_id")) == uid and pay.get("status") == "pending":
+            fb_set(f"payments/{pid}/status", "cancelled")
+            count += 1
+    bot.send_message(m.chat.id,
+        f"✅ User <code>{uid}</code> temp cleared!\n"
+        f"📋 {count} pending payment(s) cancelled.")
+
+# ── Admin: Show all pending payments ──
+@bot.message_handler(commands=["pending"])
+def show_pending(m):
+    if m.chat.id != ADMIN_ID:
+        return
+    payments = fb_get("payments") or {}
+    pending  = [(pid, p) for pid, p in payments.items() if p.get("status") == "pending"]
+    if not pending:
+        bot.send_message(m.chat.id, "✅ ምንም pending payment የለም")
+        return
+    lines = [f"⏳ <b>Pending Payments ({len(pending)}):</b>\n"]
+    for pid, p in pending[:10]:
+        t = datetime.fromtimestamp(p.get("time", 0)/1000).strftime("%m/%d %H:%M") if p.get("time") else "—"
+        lines.append(f"• {p.get('display','?')} — {p.get('amount',0)} ብር — {t}")
+    bot.send_message(m.chat.id, "\n".join(lines))
+
+# ── Admin: Stats ──
+@bot.message_handler(commands=["stats"])
+def cmd_stats(m):
+    if m.chat.id != ADMIN_ID:
+        return
+    users    = fb_get("users") or {}
+    payments = fb_get("payments") or {}
+    approved = [p for p in payments.values() if p.get("status") == "approved"]
+    total_dep = sum(p.get("amount", 0) for p in approved)
+    total_bal = sum((u.get("balance") or 0) for u in users.values())
+    bot.send_message(m.chat.id,
+        f"📊 <b>Stats</b>\n\n"
+        f"👥 Users: {len(users)}\n"
+        f"✅ Approved deposits: {len(approved)}\n"
+        f"💰 Total deposited: {total_dep} ብር\n"
+        f"💼 Total balance: {total_bal} ብር")
+
 # ══════════════════════════════════════════════════════
 #  📸 SCREENSHOT HANDLER
 # ══════════════════════════════════════════════════════
@@ -285,7 +342,8 @@ def handle_screenshot(m):
     temp = fb_get(f"temp/{uid}")
 
     if not temp:
-        bot.send_message(m.chat.id, "❗ መጀመሪያ <b>Deposit</b> ምረጥ → amount ምረጥ → ከዚያ screenshot ላክ")
+        bot.send_message(m.chat.id,
+            "❗ መጀመሪያ <b>Deposit</b> ምረጥ → amount ምረጥ → ከዚያ screenshot ላክ")
         return
 
     amount  = temp.get("amount", 0)
@@ -302,14 +360,15 @@ def handle_screenshot(m):
     # Already has pending
     if has_pending(uid):
         bot.send_message(m.chat.id,
-            "⚠️ <b>አስቀድሞ Pending Payment አለዎት!</b>\nጥቂት ይጠብቁ...")
+            "⚠️ <b>አስቀድሞ Pending Payment አለዎት!</b>\n"
+            "ጥቂት ይጠብቁ... ወይም Admin ያናግሩ @admin")
         return
 
     # Save screenshot hash
     save_screenshot_hash(file_id, uid, amount)
 
     # Save pending payment to Firebase
-    pid = fb_push("payments", {
+    result = fb_push("payments", {
         "user_id":  uid,
         "display":  m.from_user.username or m.from_user.first_name or uid,
         "amount":   amount,
@@ -317,18 +376,24 @@ def handle_screenshot(m):
         "status":   "pending",
         "time":     int(datetime.now().timestamp() * 1000),
         "verified": False,
-    }).key
+    })
 
-    # Save pid in temp so SMS can match later
+    if not result:
+        bot.send_message(m.chat.id, "❌ Error! እንደገና ሞክር")
+        return
+
+    pid = result.key
+
     fb_set(f"temp/{uid}/pid", pid)
     fb_set(f"temp/{uid}/file_id", file_id)
 
     bot.send_message(m.chat.id,
         f"📸 Screenshot ተቀብሏል!\n"
         f"💰 <b>{amount} ብር</b>\n\n"
-        f"⏳ SMS verification እየጠበቀ ነው...")
+        f"⏳ SMS verification እየጠበቀ ነው...\n"
+        f"ብዙ አይቆይም ✅")
 
-    # Notify admin (info only — auto verify will handle)
+    # Notify admin
     name = m.from_user.username or m.from_user.first_name
     try:
         bot.send_photo(ADMIN_ID, file_id,
@@ -397,7 +462,6 @@ def handle_forwarded_sms(m):
         if pay.get("status") != "pending":
             continue
         pay_amount = pay.get("amount", 0)
-        # Amount match (allow ±1 for rounding)
         if abs(float(pay_amount) - sms_amount) <= 1:
             matched_pid = pid
             matched_uid = str(pay.get("user_id"))
@@ -424,27 +488,25 @@ def handle_forwarded_sms(m):
     fb_set(f"payments/{matched_pid}/sms_bank", sms_bank)
     fb_set(f"payments/{matched_pid}/sms_sender", sms.get("sender"))
 
-    # Save ref to prevent reuse
     if sms_ref:
         save_ref(sms_ref, matched_uid, int(sms_amount))
 
-    # Update analytics
     dep_snap = fb_get("analytics/totalDeposits") or 0
     fb_set("analytics/totalDeposits", dep_snap + int(sms_amount))
 
-    # Clear temp
     fb_set(f"temp/{matched_uid}", None)
 
-    # Notify user ✅
     new_bal = bal + int(sms_amount)
-    bot.send_message(int(matched_uid),
-        f"✅ <b>Deposit Approved!</b>\n\n"
-        f"💰 {int(sms_amount)} ብር ታከለ\n"
-        f"🏦 {sms_bank} — {sms.get('sender')}\n"
-        f"📋 Ref: <code>{sms_ref}</code>\n\n"
-        f"💼 New Balance: <b>{new_bal} ብር</b>")
+    try:
+        bot.send_message(int(matched_uid),
+            f"✅ <b>Deposit Approved!</b>\n\n"
+            f"💰 {int(sms_amount)} ብር ታከለ\n"
+            f"🏦 {sms_bank} — {sms.get('sender')}\n"
+            f"📋 Ref: <code>{sms_ref}</code>\n\n"
+            f"💼 New Balance: <b>{new_bal} ብር</b>")
+    except Exception as e:
+        print(f"User notify error: {e}")
 
-    # Notify admin ✅
     display = matched_pay.get("display") or matched_uid
     bot.send_message(ADMIN_ID,
         f"✅ <b>Auto Approved!</b>\n\n"
@@ -456,7 +518,7 @@ def handle_forwarded_sms(m):
     print(f"✅ Auto approved: {matched_uid} → {sms_amount} ብር ({sms_ref})")
 
 # ══════════════════════════════════════════════════════
-#  📝 TEXT HANDLER — Deposit amount / Withdrawal flow
+#  📝 TEXT HANDLER
 # ══════════════════════════════════════════════════════
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def handle_text(m):
@@ -502,7 +564,7 @@ def handle_text(m):
         fb_set(f"users/{uid}/balance", balance - amount)
         fb_set(f"users/{uid}/pending_withdrawal", amount)
 
-        wid = fb_push("bot/withdrawals", {
+        result = fb_push("bot/withdrawals", {
             "user_id": uid,
             "display": m.from_user.username or m.from_user.first_name or uid,
             "amount":  amount,
@@ -510,7 +572,9 @@ def handle_text(m):
             "account": account,
             "status":  "pending",
             "time":    datetime.now().strftime("%Y-%m-%d %H:%M")
-        }).key
+        })
+
+        wid = result.key if result else "unknown"
 
         fb_set(f"bot/state/{uid}", None)
         fb_set(f"temp_wd/{uid}", None)
@@ -521,7 +585,6 @@ def handle_text(m):
             f"📲 {method} — <code>{account}</code>\n\n"
             f"⏳ Admin ያስተናግዳቸዋል")
 
-        # Admin notify
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton("✅ Paid",   callback_data=f"wda_{wid}_{uid}_{amount}"),
@@ -536,7 +599,6 @@ def handle_text(m):
             reply_markup=kb)
         return
 
-    # ── Default: show menu ──
     send_menu(m.chat.id)
 
 # ══════════════════════════════════════════════════════
@@ -548,7 +610,6 @@ def handle_callback(c):
     uid  = str(c.from_user.id)
     data = c.data
 
-    # ── Deposit menu ──
     if data == "deposit":
         kb = InlineKeyboardMarkup(row_width=1)
         for a in [50, 100, 200, 500, 1000]:
@@ -561,7 +622,7 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id,
             f"✅ <b>{amount} ብር</b> ምረጥ\n\n"
             f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
-            f"📱 Telebirr: <code>0911XXXXXX</code>\n\n"
+            f"📱 Telebirr: <code>{TELEBIRR_ACCOUNT}</code>\n\n"
             f"💸 ከፈለ → 📸 Screenshot ላክ")
 
     elif data == "balance":
@@ -588,7 +649,7 @@ def handle_callback(c):
         if not user_txns:
             bot.send_message(c.message.chat.id, "📊 ምንም ታሪክ የለም"); return
         user_txns.sort(key=lambda x: x.get("time", 0), reverse=True)
-        icons = {"approved": "✅", "rejected": "❌", "pending": "⏳"}
+        icons = {"approved": "✅", "rejected": "❌", "pending": "⏳", "cancelled": "🚫"}
         lines = ["📊 <b>ግብይት ታሪክ:</b>\n"]
         for p in user_txns[:10]:
             icon = icons.get(p.get("status"), "❓")
@@ -597,7 +658,6 @@ def handle_callback(c):
             lines.append(f"{icon}{verified} {p.get('amount',0)} ብር — {t}")
         bot.send_message(c.message.chat.id, "\n".join(lines))
 
-    # ── Withdrawal method ──
     elif data.startswith("wdm_"):
         method = data.replace("wdm_", "")
         fb_set(f"temp_wd/{uid}/method", method)
@@ -605,7 +665,6 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id,
             f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
 
-    # ── Admin: Approve withdrawal ──
     elif data.startswith("wda_"):
         parts  = data.split("_")
         wid    = parts[1]
@@ -623,9 +682,10 @@ def handle_callback(c):
                 message_id=c.message.message_id,
                 text=c.message.text + "\n\n✅ <b>PAID</b>")
         except Exception: pass
-        bot.send_message(int(u_id), f"✅ <b>{amount} ብር</b> ተላከ!")
+        try:
+            bot.send_message(int(u_id), f"✅ <b>{amount} ብር</b> ተላከ!")
+        except Exception: pass
 
-    # ── Admin: Reject withdrawal ──
     elif data.startswith("wdr_"):
         parts  = data.split("_")
         wid    = parts[1]
@@ -641,10 +701,11 @@ def handle_callback(c):
                 message_id=c.message.message_id,
                 text=c.message.text + "\n\n❌ <b>REJECTED — Refunded</b>")
         except Exception: pass
-        bot.send_message(int(u_id),
-            f"❌ Withdrawal Rejected\n💰 <b>{amount} ብር</b> balance ላይ ተመለሰ!")
+        try:
+            bot.send_message(int(u_id),
+                f"❌ Withdrawal Rejected\n💰 <b>{amount} ብር</b> balance ላይ ተመለሰ!")
+        except Exception: pass
 
-    # ── Admin: Manual approve deposit (fallback) ──
     elif data.startswith("ap_"):
         parts  = data.split("_")
         pid    = parts[1]
@@ -661,10 +722,11 @@ def handle_callback(c):
                 message_id=c.message.message_id,
                 caption=c.message.caption + "\n\n✅ <b>MANUALLY APPROVED</b>")
         except Exception: pass
-        bot.send_message(int(u_id),
-            f"✅ <b>{amount} ብር</b> ታከለ! (Manual)\nBalance: <b>{bal+amount} ብር</b>")
+        try:
+            bot.send_message(int(u_id),
+                f"✅ <b>{amount} ብር</b> ታከለ! (Manual)\nBalance: <b>{bal+amount} ብር</b>")
+        except Exception: pass
 
-    # ── Admin: Manual reject deposit (fallback) ──
     elif data.startswith("re_"):
         parts = data.split("_")
         pid   = parts[1]
@@ -677,13 +739,14 @@ def handle_callback(c):
                 message_id=c.message.message_id,
                 caption=c.message.caption + "\n\n❌ <b>REJECTED</b>")
         except Exception: pass
-        bot.send_message(int(u_id), "❌ <b>Deposit Rejected</b>\nAdmin ያናግሩ።")
+        try:
+            bot.send_message(int(u_id), "❌ <b>Deposit Rejected</b>\nAdmin ያናግሩ።")
+        except Exception: pass
 
 # ══════════════════════════════════════════════════════
 #  📊 DAILY REPORT
 # ══════════════════════════════════════════════════════
 def daily_report_loop():
-    import time
     while True:
         now      = datetime.now()
         next_run = now.replace(
@@ -728,7 +791,19 @@ def daily_report_loop():
 threading.Thread(target=daily_report_loop, daemon=True).start()
 
 # ══════════════════════════════════════════════════════
-#  🚀 RUN
+#  🚀 RUN WITH AUTO-RESTART
 # ══════════════════════════════════════════════════════
-print("🤖 Bingo Bot running with SMS Auto-Verify...")
-bot.infinity_polling(skip_pending=True)
+print("🤖 Bingo Bot starting with Auto-Restart...")
+
+while True:
+    try:
+        print("✅ Bot polling started...")
+        bot.infinity_polling(
+            skip_pending=True,
+            timeout=60,
+            long_polling_timeout=60
+        )
+    except Exception as e:
+        print(f"❌ Bot crashed: {e}")
+        print("🔄 Restarting in 5 seconds...")
+        time.sleep(5)
