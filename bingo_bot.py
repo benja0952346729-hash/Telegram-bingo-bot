@@ -43,7 +43,7 @@ from flask import Flask
 # ══════════════════════════════════════════════════════
 BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID   = 6883208728
-WEBAPP_URL = "https://bingo-game-4.onrender.com"
+WEBAPP_URL = "http://game-production-7f86.up.railway.app"
 
 FIREBASE_DB_URL = "https://house-rent-app-3674a-default-rtdb.firebaseio.com/"
 
