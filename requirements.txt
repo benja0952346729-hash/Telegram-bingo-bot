@@ -1,3 +1,7 @@
 pyTelegramBotAPI
 firebase-admin
 flask
+easyocr
+Pillow
+requests
+numpy
