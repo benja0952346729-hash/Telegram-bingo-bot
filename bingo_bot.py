@@ -797,6 +797,7 @@ print("🤖 Bingo Bot starting with Auto-Restart...")
 
 while True:
     try:
+        bot.remove_webhook()
         print("✅ Bot polling started...")
         bot.infinity_polling(
             skip_pending=True,
