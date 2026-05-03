@@ -561,7 +561,7 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id,
             f"✅ <b>{amount} ብር</b> ምረጥ\n\n"
             f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
-            f"📱 Telebirr: <code>0952346729</code>\n\n"
+            f"📱 Telebirr: <code>0911XXXXXX</code>\n\n"
             f"💸 ከፈለ → 📸 Screenshot ላክ")
 
     elif data == "balance":
