@@ -7,8 +7,7 @@
 ║  ✅ Amount ±5% + Ref match → Auto Approve                        ║
 ║  ✅ SMS ቀድሞ ቢገባ → 5 min ይጠብቃል → screenshot ቢመጣ approve       ║
 ║  ✅ Screenshot ቀድሞ ቢገባ → 5 min ይጠብቃል → SMS ቢመጣ approve       ║
-║  ✅ Screenshot 5 min, SMS 30 min → Auto Cancel                   ║
-║  ✅ Cancel → screenshot hash ይሰርዛል (እንደገና መላክ ይቻላል)           ║
+║  ✅ 5 min ካለፈ → Auto Cancel                                     ║
 ║  ✅ FIFO → ቀድሞ screenshot የላከ ቀድሞ approve ይሆናል               ║
 ║  ✅ Duplicate ref/hash detection                                 ║
 ║  ✅ Date check (ዛሬ ብቻ valid)                                    ║
@@ -64,11 +63,8 @@ MAX_WITHDRAWAL   = 5000
 DAILY_REPORT_HOUR   = 20
 DAILY_REPORT_MINUTE = 0
 
-# ✅ Screenshot timeout (seconds) — 5 minutes
-SCREENSHOT_TIMEOUT = 5 * 60   # 5 minutes
-
-# ✅ SMS timeout (seconds) — 30 minutes
-SMS_TIMEOUT = 30 * 60          # 30 minutes
+# ✅ SMS / Screenshot timeout (seconds)
+MATCH_TIMEOUT = 5 * 60  # 5 minutes
 
 # ══════════════════════════════════════════════════════
 #  🌐 FLASK KEEP-ALIVE
@@ -333,11 +329,11 @@ def timeout_checker():
             now_ts = datetime.now().timestamp()
 
             # ── 1. Pending SMS timeout ──
-            # SMS ደረሰ ግን screenshot አልደረሰም → 30 min cancel
+            # SMS ደረሰ ግን screenshot አልደረሰም → 5 min cancel
             pending_sms_list = fb_get("bot/pending_sms") or {}
             for sms_key, sms_data in list(pending_sms_list.items()):
                 saved_at = sms_data.get("saved_at", 0)
-                if now_ts - saved_at > SMS_TIMEOUT:
+                if now_ts - saved_at > MATCH_TIMEOUT:
                     ref    = sms_data.get("ref", sms_key)
                     amount = sms_data.get("amount", 0)
                     bank   = sms_data.get("bank", "")
@@ -347,7 +343,7 @@ def timeout_checker():
                         f"🏦 {bank}\n"
                         f"💰 {amount} ብር\n"
                         f"📋 Ref: <code>{ref}</code>\n\n"
-                        f"30 ደቂቃ ካለፈ screenshot አልደረሰም")
+                        f"5 ደቂቃ ካለፈ screenshot አልደረሰም")
                     print(f"⏰ SMS timeout cancelled: {ref}")
 
             # ── 2. Pending Screenshot timeout ──
@@ -357,19 +353,13 @@ def timeout_checker():
                 if pay.get("status") != "pending":
                     continue
                 pay_time = pay.get("time", 0) / 1000  # ms → seconds
-                if now_ts - pay_time > SCREENSHOT_TIMEOUT:
+                if now_ts - pay_time > MATCH_TIMEOUT:
                     uid     = str(pay.get("user_id"))
                     amount  = pay.get("amount", 0)
                     display = pay.get("display") or uid
 
                     fb_set(f"payments/{pid}/status", "cancelled")
                     fb_set(f"temp/{uid}", None)
-
-                    # ✅ Cancel ሲሆን hash ይሰርዛል — እንደገና መላክ ይቻላል
-                    file_id = pay.get("file_id")
-                    if file_id:
-                        h = hash_file(file_id)
-                        fb_set(f"bot/used_hashes/{h}", None)
 
                     try:
                         bot.send_message(int(uid),
