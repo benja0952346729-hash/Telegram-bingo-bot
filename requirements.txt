@@ -1,6 +1,5 @@
 pyTelegramBotAPI
 firebase-admin
 flask
-pytesseract
 Pillow
 requests
