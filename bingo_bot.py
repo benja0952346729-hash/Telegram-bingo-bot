@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║              BINGO PRO — TELEGRAM BOT (SMS WEBHOOK)             ║
-║  Flow: SMS → REF | Screenshot → REF | Match → Auto Approve      ║
+║           BINGO PRO — TELEGRAM BOT + AUTO USSD WITHDRAWAL       ║
+║  CBE: *889#  |  Telebirr: *127#  |  MacroDroid Integration      ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -38,6 +38,11 @@ MIN_WITHDRAWAL   = 50
 MAX_WITHDRAWAL   = 5000
 DAILY_REPORT_HOUR   = 20
 DAILY_REPORT_MINUTE = 0
+
+# ══════════════════════════════════════════════════════
+#  MACRODROID WEBHOOK SECRET (ለ security)
+# ══════════════════════════════════════════════════════
+MACRODROID_SECRET = os.environ.get("MACRODROID_SECRET", "bingo_secret_2024")
 
 # ══════════════════════════════════════════════════════
 #  FIREBASE
@@ -96,27 +101,21 @@ def home():
 def sms_webhook():
     try:
         sms_text = ""
-
-        # JSON format
         if flask_request.is_json:
             data = flask_request.get_json(force=True, silent=True) or {}
             sms_text = data.get("text", "") or data.get("sms", "") or data.get("message", "") or data.get("body", "")
-        
-        # Form data format
         if not sms_text:
-            sms_text = (flask_request.form.get("text", "") or 
+            sms_text = (flask_request.form.get("text", "") or
                        flask_request.form.get("sms", "") or
                        flask_request.form.get("body", "") or
                        flask_request.form.get("message", ""))
-        
-        # Raw body format
         if not sms_text:
             try:
                 raw = flask_request.get_data(as_text=True)
                 if raw:
                     import urllib.parse
                     parsed = urllib.parse.parse_qs(raw)
-                    sms_text = (parsed.get("text", [""])[0] or 
+                    sms_text = (parsed.get("text", [""])[0] or
                                parsed.get("body", [""])[0] or
                                parsed.get("sms", [""])[0])
                 if not sms_text:
@@ -125,7 +124,6 @@ def sms_webhook():
                 pass
 
         print(f"SMS Webhook received: {sms_text[:100] if sms_text else 'EMPTY'}")
-
         if not sms_text:
             return jsonify({"status": "ok"}), 200
 
@@ -137,8 +135,286 @@ def sms_webhook():
         return jsonify({"status": "ok"}), 200
 
 
+# ══════════════════════════════════════════════════════
+#  MACRODROID WEBHOOK — Auto USSD Trigger & Result
+# ══════════════════════════════════════════════════════
+
+@flask_app.route("/macrodroid/ussd", methods=["POST"])
+def macrodroid_ussd_trigger():
+    """
+    MacroDroid ይህን endpoint ይጠቀማል withdrawal request ለማግኘት።
+    MacroDroid HTTP action → GET /macrodroid/ussd?secret=xxx
+    Bot pending withdrawal ካለ USSD code ይመልሳል።
+    """
+    try:
+        secret = flask_request.args.get("secret", "") or (flask_request.get_json(silent=True) or {}).get("secret", "")
+        if secret != MACRODROID_SECRET:
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+        # Pending withdrawal ይፈልጋል
+        pending = fb_get("bot/ussd_queue") or {}
+        if not pending:
+            return jsonify({"status": "no_task"}), 200
+
+        # የመጀመሪያውን task ይወስዳል
+        task_id = list(pending.keys())[0]
+        task    = pending[task_id]
+
+        if task.get("status") != "waiting":
+            return jsonify({"status": "no_task"}), 200
+
+        # Processing ላይ ያደርጋል
+        fb_set(f"bot/ussd_queue/{task_id}/status", "processing")
+        fb_set(f"bot/ussd_queue/{task_id}/started_at", datetime.now().timestamp())
+
+        method  = task.get("method", "")
+        account = task.get("account", "")
+        amount  = task.get("amount", 0)
+        wid     = task.get("wid", "")
+        uid     = task.get("uid", "")
+
+        # USSD code ይሰራል
+        if method == "Telebirr":
+            # *127*2*1*PHONE*AMOUNT*COMMENT*PIN#
+            # PIN MacroDroid ላይ ነው የሚገባው — bot አይልክም (security)
+            ussd = f"*127*2*1*{account}*{amount}*withdrawal"
+            ussd_type = "telebirr"
+        elif method == "CBE":
+            # *889*PIN*2*ACCOUNT*AMOUNT*REMARK*PIN#
+            # PIN MacroDroid ላይ ነው — bot አይልክም
+            ussd = f"*889**2*{account}*{amount}*withdrawal"
+            ussd_type = "cbe"
+        else:
+            # Other methods — manual
+            fb_set(f"bot/ussd_queue/{task_id}/status", "manual")
+            return jsonify({"status": "manual", "task_id": task_id}), 200
+
+        return jsonify({
+            "status":    "ok",
+            "task_id":   task_id,
+            "ussd":      ussd,
+            "ussd_type": ussd_type,
+            "amount":    amount,
+            "account":   account,
+            "method":    method,
+            "uid":       uid,
+            "wid":       wid,
+        }), 200
+
+    except Exception as e:
+        print(f"MacroDroid USSD trigger error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@flask_app.route("/macrodroid/result", methods=["POST"])
+def macrodroid_ussd_result():
+    """
+    MacroDroid SMS ከደረሰ በኋላ ይህን endpoint ይጠቀማል result ለመላክ።
+    MacroDroid HTTP action → POST /macrodroid/result
+    Body: {"secret": "xxx", "task_id": "...", "status": "success/failed", "sms": "..."}
+    """
+    try:
+        data   = flask_request.get_json(force=True, silent=True) or {}
+        secret = data.get("secret", "")
+
+        if secret != MACRODROID_SECRET:
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+        task_id = data.get("task_id", "")
+        status  = data.get("status", "")  # "success" or "failed"
+        sms     = data.get("sms", "")
+
+        if not task_id:
+            return jsonify({"status": "error", "message": "No task_id"}), 400
+
+        task = fb_get(f"bot/ussd_queue/{task_id}") or {}
+        uid  = str(task.get("uid", ""))
+        wid  = task.get("wid", "")
+        amount = task.get("amount", 0)
+
+        if status == "success":
+            # Withdrawal approve
+            fb_set(f"bot/ussd_queue/{task_id}/status", "done")
+            fb_set(f"bot/withdrawals/{wid}/status", "approved")
+            fb_set(f"bot/withdrawals/{wid}/ussd_done", True)
+            fb_set(f"users/{uid}/pending_withdrawal", 0)
+
+            # Analytics
+            wd_snap = fb_get("analytics/totalWithdrawals") or 0
+            fb_set("analytics/totalWithdrawals", wd_snap + amount)
+
+            # User notify
+            try:
+                bot.send_message(int(uid),
+                    f"✅ <b>Withdrawal ተልኳል!</b>\n\n"
+                    f"💰 <b>{amount} ብር</b> ተልኳል\n"
+                    f"📱 Auto USSD transfer ተሳክቷል\n\n"
+                    f"🎮 መጫወት ቀጥል!")
+            except Exception as e:
+                print(f"User notify error: {e}")
+
+            # Admin notify
+            display = task.get("display", uid)
+            method  = task.get("method", "")
+            account = task.get("account", "")
+            bot.send_message(ADMIN_ID,
+                f"✅ <b>Auto USSD Withdrawal ተሳካ!</b>\n\n"
+                f"👤 {display} (<code>{uid}</code>)\n"
+                f"💰 {amount} ብር\n"
+                f"📲 {method} — <code>{account}</code>")
+
+        else:
+            # Failed — balance ተመልሶ admin notify
+            fb_set(f"bot/ussd_queue/{task_id}/status", "failed")
+            fb_set(f"bot/withdrawals/{wid}/status", "failed")
+
+            bal = fb_get(f"users/{uid}/balance") or 0
+            fb_set(f"users/{uid}/balance", bal + amount)
+            fb_set(f"users/{uid}/pending_withdrawal", 0)
+
+            try:
+                bot.send_message(int(uid),
+                    f"⚠️ <b>Withdrawal ችግር ተፈጠረ</b>\n\n"
+                    f"💰 {amount} ብር balance ላይ ተመለሰ\n"
+                    f"እንደገና ሞክር ወይም Admin አናጋር")
+            except Exception as e:
+                print(f"User notify error: {e}")
+
+            display = task.get("display", uid)
+            method  = task.get("method", "")
+            account = task.get("account", "")
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton("✅ Manual Pay",   callback_data=f"wda_{wid}_{uid}_{amount}"),
+                InlineKeyboardButton("❌ Cancel",        callback_data=f"wdr_{wid}_{uid}_{amount}")
+            )
+            bot.send_message(ADMIN_ID,
+                f"❌ <b>Auto USSD Failed!</b>\n\n"
+                f"👤 {display} (<code>{uid}</code>)\n"
+                f"💰 {amount} ብር\n"
+                f"📲 {method} — <code>{account}</code>\n\n"
+                f"Manual payment ያስፈልጋል:",
+                reply_markup=kb)
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        print(f"MacroDroid result error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@flask_app.route("/macrodroid/ping", methods=["GET"])
+def macrodroid_ping():
+    """MacroDroid phone online ነው ወይ ለማወቅ"""
+    secret = flask_request.args.get("secret", "")
+    if secret != MACRODROID_SECRET:
+        return jsonify({"status": "error"}), 401
+    fb_set("bot/macrodroid_last_ping", datetime.now().timestamp())
+    return jsonify({"status": "ok", "time": datetime.now().isoformat()}), 200
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+# ══════════════════════════════════════════════════════
+#  AUTO USSD — Withdrawal Queue
+# ══════════════════════════════════════════════════════
+
+def queue_ussd_withdrawal(wid, uid, amount, method, account, display):
+    """
+    Withdrawal request USSD queue ውስጥ ይጨምራል።
+    MacroDroid polling ሲያደርግ ያገኘዋል።
+    """
+    try:
+        task_data = {
+            "wid":        wid,
+            "uid":        str(uid),
+            "amount":     amount,
+            "method":     method,
+            "account":    account,
+            "display":    display,
+            "status":     "waiting",
+            "created_at": datetime.now().timestamp(),
+        }
+        fb_set(f"bot/ussd_queue/{wid}", task_data)
+        print(f"USSD queued: {wid} | {method} | {amount} ብር → {account}")
+
+        # MacroDroid online ነው ወይ check
+        last_ping = fb_get("bot/macrodroid_last_ping") or 0
+        now_ts    = datetime.now().timestamp()
+        if now_ts - float(last_ping) > 300:  # 5 ደቂቃ
+            bot.send_message(ADMIN_ID,
+                f"⚠️ <b>MacroDroid Offline ሊሆን ይችላል!</b>\n\n"
+                f"Last ping: {int((now_ts - float(last_ping)) / 60)} ደቂቃ በፊት\n"
+                f"Phone ያብሩ ወይም MacroDroid app ያረጋግጡ")
+
+        return True
+    except Exception as e:
+        print(f"queue_ussd_withdrawal error: {e}")
+        return False
+
+
+def is_ussd_supported(method):
+    """CBE እና Telebirr ብቻ auto USSD ይሰራል"""
+    return method in ["CBE", "Telebirr"]
+
+
+# ══════════════════════════════════════════════════════
+#  REF EXTRACTION
+# ══════════════════════════════════════════════════════
+def extract_ref_from_text(text):
+    if not text:
+        return None
+    cbe_url = re.search(r'/BranchReceipt/([A-Z0-9]{8,20})&', text, re.IGNORECASE)
+    if cbe_url:
+        return cbe_url.group(1).upper()
+    cbe_id = re.search(r'transaction\s*(?:ID|id)\s*:?\s*(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
+    if cbe_id:
+        return cbe_id.group(1).upper()
+    cbe_bank = re.search(r'bank\s+transaction\s+number\s+is\s+(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
+    if cbe_bank:
+        return cbe_bank.group(1).upper()
+    tel_num = re.search(r'transaction\s+number\s+is\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
+    if tel_num:
+        return tel_num.group(1).upper()
+    tel_am = re.search(r'የ[^\s]*ቁጥር[^\s]*\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
+    if tel_am:
+        return tel_am.group(1).upper()
+    tel_url = re.search(r'/receipt/([A-Z0-9]{8,16})', text, re.IGNORECASE)
+    if tel_url:
+        return tel_url.group(1).upper()
+    ft = re.search(r'\b(FT[A-Z0-9]{6,16})\b', text, re.IGNORECASE)
+    if ft:
+        return ft.group(1).upper()
+    de = re.search(r'\b(D[A-Z][A-Z0-9]{6,14})\b', text, re.IGNORECASE)
+    if de:
+        return de.group(1).upper()
+    return None
+
+
+def extract_amount_from_sms(text):
+    cbe = re.search(r'credited\s+with\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if cbe:
+        return float(cbe.group(1).replace(',', ''))
+    tel_recv = re.search(r'received\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if tel_recv:
+        return float(tel_recv.group(1).replace(',', ''))
+    tel_trans = re.search(r'transferred\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if tel_trans:
+        return float(tel_trans.group(1).replace(',', ''))
+    cbe2 = re.search(r'Completed\s+ETB\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if cbe2:
+        return float(cbe2.group(1).replace(',', ''))
+    am = re.search(r'([\d,]+\.?\d*)\s*ብር', text)
+    if am:
+        return float(am.group(1).replace(',', ''))
+    return 0.0
+
+
 def handle_sms_from_webhook(sms_text):
-    """SMS text ተቀብሎ REF ያወጣል → pending payment ያዛምዳል → approve"""
     try:
         ref = extract_ref_from_text(sms_text)
         if not ref:
@@ -151,8 +427,6 @@ def handle_sms_from_webhook(sms_text):
         if is_dup_ref(ref):
             bot.send_message(ADMIN_ID, f"⚠️ Duplicate SMS REF: <code>{ref}</code>")
             return
-
-        print(f"SMS REF: {ref}, Amount: {amount}")
 
         payments = fb_get("payments") or {}
         matched_pid = None
@@ -171,9 +445,9 @@ def handle_sms_from_webhook(sms_text):
             do_approve(matched_pid, matched_uid, amount, ref, sms_text)
         else:
             fb_set(f"bot/sms_pool/{ref.upper()}", {
-                "ref": ref.upper(),
-                "amount": amount,
-                "text": sms_text[:300],
+                "ref":      ref.upper(),
+                "amount":   amount,
+                "text":     sms_text[:300],
                 "saved_at": datetime.now().timestamp(),
             })
             bot.send_message(ADMIN_ID,
@@ -185,90 +459,6 @@ def handle_sms_from_webhook(sms_text):
         print(f"handle_sms_from_webhook error: {e}")
         bot.send_message(ADMIN_ID, f"❌ SMS processing error: {e}")
 
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
-
-threading.Thread(target=run_flask, daemon=True).start()
-
-# ══════════════════════════════════════════════════════
-#  REF EXTRACTION
-# ══════════════════════════════════════════════════════
-def extract_ref_from_text(text):
-    if not text:
-        return None
-
-    # CBE — URL ውስጥ
-    cbe_url = re.search(r'/BranchReceipt/([A-Z0-9]{8,20})&', text, re.IGNORECASE)
-    if cbe_url:
-        return cbe_url.group(1).upper()
-
-    # CBE — transaction ID
-    cbe_id = re.search(r'transaction\s*(?:ID|id)\s*:?\s*(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
-    if cbe_id:
-        return cbe_id.group(1).upper()
-
-    # CBE — bank transaction number is FT...
-    cbe_bank = re.search(r'bank\s+transaction\s+number\s+is\s+(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
-    if cbe_bank:
-        return cbe_bank.group(1).upper()
-
-    # Telebirr — transaction number is DE...
-    tel_num = re.search(r'transaction\s+number\s+is\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
-    if tel_num:
-        return tel_num.group(1).upper()
-
-    # Telebirr Amharic
-    tel_am = re.search(r'የ[^\s]*ቁጥር[^\s]*\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
-    if tel_am:
-        return tel_am.group(1).upper()
-
-    # Telebirr receipt URL
-    tel_url = re.search(r'/receipt/([A-Z0-9]{8,16})', text, re.IGNORECASE)
-    if tel_url:
-        return tel_url.group(1).upper()
-
-    # Fallback — FT...
-    ft = re.search(r'\b(FT[A-Z0-9]{6,16})\b', text, re.IGNORECASE)
-    if ft:
-        return ft.group(1).upper()
-
-    # Fallback — DE...
-    de = re.search(r'\b(D[A-Z][A-Z0-9]{6,14})\b', text, re.IGNORECASE)
-    if de:
-        return de.group(1).upper()
-
-    return None
-
-
-def extract_amount_from_sms(text):
-    # CBE: credited with ETB 400
-    cbe = re.search(r'credited\s+with\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if cbe:
-        return float(cbe.group(1).replace(',', ''))
-
-    # Telebirr received
-    tel_recv = re.search(r'received\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if tel_recv:
-        return float(tel_recv.group(1).replace(',', ''))
-
-    # Telebirr transferred
-    tel_trans = re.search(r'transferred\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if tel_trans:
-        return float(tel_trans.group(1).replace(',', ''))
-
-    # CBE notification
-    cbe2 = re.search(r'Completed\s+ETB\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if cbe2:
-        return float(cbe2.group(1).replace(',', ''))
-
-    # Telebirr Amharic
-    am = re.search(r'([\d,]+\.?\d*)\s*ብር', text)
-    if am:
-        return float(am.group(1).replace(',', ''))
-
-    return 0.0
 
 # ══════════════════════════════════════════════════════
 #  OCR — Groq Vision
@@ -292,33 +482,26 @@ def extract_ref_from_screenshot(file_id):
             },
             json={
                 "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_data}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": "Extract the transaction reference number from this payment screenshot. Look for: FT followed by letters/numbers (CBE), or DE followed by letters/numbers (Telebirr), or transaction ID/number. Reply with ONLY the reference number, nothing else. If not found, reply: NONE"
-                            }
-                        ]
-                    }
-                ],
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "Extract the transaction reference number from this payment screenshot. Look for: FT followed by letters/numbers (CBE), or DE followed by letters/numbers (Telebirr), or transaction ID/number. Reply with ONLY the reference number, nothing else. If not found, reply: NONE"
+                        }
+                    ]
+                }],
                 "max_tokens": 50
             },
             timeout=30
         )
 
-        result = groq_response.json()
-        print(f"Groq result: {str(result)[:200]}")
-
+        result   = groq_response.json()
         ref_text = result["choices"][0]["message"]["content"].strip()
-        print(f"Groq REF: {ref_text}")
 
         if ref_text == "NONE" or not ref_text:
             return None
@@ -334,6 +517,7 @@ def extract_ref_from_screenshot(file_id):
     except Exception as e:
         print(f"Groq OCR error: {e}")
         return None
+
 
 # ══════════════════════════════════════════════════════
 #  DUPLICATE CHECKS
@@ -368,6 +552,7 @@ def has_pending(uid):
             return True
     return False
 
+
 # ══════════════════════════════════════════════════════
 #  APPROVE
 # ══════════════════════════════════════════════════════
@@ -382,11 +567,11 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         bal     = fb_get(f"users/{uid}/balance") or 0
         new_bal = bal + amount
 
-        fb_set(f"users/{uid}/balance",       new_bal)
-        fb_set(f"payments/{pid}/status",     "approved")
-        fb_set(f"payments/{pid}/verified",   True)
-        fb_set(f"payments/{pid}/ref",        ref)
-        fb_set(f"temp/{uid}",                None)
+        fb_set(f"users/{uid}/balance",     new_bal)
+        fb_set(f"payments/{pid}/status",   "approved")
+        fb_set(f"payments/{pid}/verified", True)
+        fb_set(f"payments/{pid}/ref",      ref)
+        fb_set(f"temp/{uid}",              None)
 
         save_ref(ref, uid, amount)
 
@@ -414,50 +599,29 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         print(f"do_approve error: {e}")
         bot.send_message(ADMIN_ID, f"❌ Approve error: {e}\nREF: {ref}")
 
+
 # ══════════════════════════════════════════════════════
-#  IS BANK SMS — የተስተካከለ ✅
+#  IS BANK SMS
 # ══════════════════════════════════════════════════════
 def is_bank_sms(text):
     if not text:
         return False
     t = text.lower()
-
-    # SMS Forwarder format — From: 127 / From: CBE
-    if "from: 127" in t:
-        return True
-    if "from: cbe" in t:
-        return True
-    if "ethio telecom" in t:
-        return True
-
-    # CBE / Telebirr keywords
-    if "credited with etb" in t:
-        return True
-    if "you have received etb" in t:
-        return True
-    if "received etb" in t:
-        return True
-    if "transferred etb" in t:
-        return True
-    if "transaction number is" in t:
-        return True
-    if "has been credited" in t:
-        return True
-    if "branchreceipt" in t:
-        return True
-    if "bank transaction number" in t:
-        return True
-
-    # REF patterns — FT... ወይም DE...
-    if re.search(r'\bFT[A-Z0-9]{6,16}\b', text, re.IGNORECASE):
-        return True
-    if re.search(r'\bDE[A-Z0-9]{6,14}\b', text, re.IGNORECASE):
-        return True
-
+    if "from: 127" in t: return True
+    if "from: cbe" in t: return True
+    if "ethio telecom" in t: return True
+    if "credited with etb" in t: return True
+    if "you have received etb" in t: return True
+    if "received etb" in t: return True
+    if "transferred etb" in t: return True
+    if "transaction number is" in t: return True
+    if "has been credited" in t: return True
+    if "branchreceipt" in t: return True
+    if "bank transaction number" in t: return True
+    if re.search(r'\bFT[A-Z0-9]{6,16}\b', text, re.IGNORECASE): return True
+    if re.search(r'\bDE[A-Z0-9]{6,14}\b', text, re.IGNORECASE): return True
     return False
 
-
-# handle_bank_sms — handle_text ውስጥ ነው የሚሰራው (ከታች ይመልከቱ)
 
 # ══════════════════════════════════════════════════════
 #  SCREENSHOT HANDLER
@@ -533,7 +697,6 @@ def process_screenshot(m):
             f"📸 Screenshot ተቀብሏል!\n"
             f"📋 REF: <code>{ref}</code>\n\n"
             f"⏳ SMS verification እየጠበቀ ነው...")
-
         try:
             kb = InlineKeyboardMarkup()
             kb.add(
@@ -554,6 +717,7 @@ def process_screenshot(m):
 @bot.message_handler(content_types=["photo", "document"])
 def handle_screenshot(m):
     threading.Thread(target=process_screenshot, args=(m,), daemon=True).start()
+
 
 # ══════════════════════════════════════════════════════
 #  COMMANDS
@@ -632,6 +796,44 @@ def show_pending(m):
     bot.send_message(m.chat.id, "\n".join(lines))
 
 
+@bot.message_handler(commands=["ussdqueue"])
+def show_ussd_queue(m):
+    """Admin: USSD queue status ያሳያል"""
+    if m.chat.id != ADMIN_ID:
+        return
+    queue = fb_get("bot/ussd_queue") or {}
+    if not queue:
+        bot.send_message(m.chat.id, "✅ USSD Queue ባዶ ነው")
+        return
+    lines = [f"📋 <b>USSD Queue ({len(queue)}):</b>\n"]
+    for tid, task in list(queue.items())[:10]:
+        status  = task.get("status", "?")
+        amount  = task.get("amount", 0)
+        method  = task.get("method", "?")
+        account = task.get("account", "?")
+        display = task.get("display", "?")
+        icon = {"waiting": "⏳", "processing": "🔄", "done": "✅", "failed": "❌", "manual": "👤"}.get(status, "❓")
+        lines.append(f"{icon} {display} — {amount} ብር — {method} {account}")
+    bot.send_message(m.chat.id, "\n".join(lines))
+
+
+@bot.message_handler(commands=["macrostatus"])
+def macro_status(m):
+    """Admin: MacroDroid phone status"""
+    if m.chat.id != ADMIN_ID:
+        return
+    last_ping = fb_get("bot/macrodroid_last_ping") or 0
+    now_ts    = datetime.now().timestamp()
+    diff_min  = int((now_ts - float(last_ping)) / 60)
+    if diff_min < 5:
+        status = f"✅ Online ({diff_min} ደቂቃ በፊት ping)"
+    elif diff_min < 30:
+        status = f"⚠️ {diff_min} ደቂቃ ምንም ping የለም"
+    else:
+        status = f"❌ Offline ({diff_min} ደቂቃ)"
+    bot.send_message(m.chat.id, f"📱 <b>MacroDroid Status</b>\n\n{status}")
+
+
 @bot.message_handler(commands=["clearpending"])
 def clear_pending(m):
     if m.chat.id != ADMIN_ID:
@@ -651,11 +853,11 @@ def clear_pending(m):
     bot.send_message(m.chat.id,
         f"✅ User <code>{uid}</code> cleared!\n📋 {count} pending cancelled.")
 
+
 # ══════════════════════════════════════════════════════
 #  TEXT HANDLER
 # ══════════════════════════════════════════════════════
-# SMS Forwarder app ID — deploy አድርግ → logs ላይ ታያለህ → ይህን ቀይር
-ALLOWED_SMS_SENDERS = [ADMIN_ID]  # ← app ID ሲያወቁ ይጨምሩ
+ALLOWED_SMS_SENDERS = [ADMIN_ID]
 
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def handle_text(m):
@@ -663,20 +865,13 @@ def handle_text(m):
     text  = m.text.strip()
     state = fb_get(f"bot/state/{uid}")
 
-    # ✅ ሁሉም sender ID log ያደርጋል — app ID ለማወቅ
     print(f"SENDER ID: {m.from_user.id} | USERNAME: {m.from_user.username} | TEXT: {text[:50]}")
 
-    # ✅ SMS Forwarder — allowed senders ብቻ
     if m.from_user.id in ALLOWED_SMS_SENDERS and is_bank_sms(text):
         print(f"Bank SMS received from {m.from_user.id}: {text[:100]}")
-        threading.Thread(
-            target=handle_sms_from_webhook,
-            args=(text,),
-            daemon=True
-        ).start()
+        threading.Thread(target=handle_sms_from_webhook, args=(text,), daemon=True).start()
         return
 
-    # Manual REF entry (OCR ካልቻለ)
     if state == "waiting_ref":
         ref = extract_ref_from_text(text)
         if not ref:
@@ -728,7 +923,6 @@ def handle_text(m):
                 f"✅ REF ተቀብሏል: <code>{ref}</code>\n\n⏳ SMS verification እየጠበቀ ነው...")
         return
 
-    # Withdrawal amount
     if state == "waiting_wd_amount":
         try:
             amount  = int(text)
@@ -754,17 +948,21 @@ def handle_text(m):
             bot.send_message(m.chat.id, "❌ ቁጥር ብቻ ላክ! ለምሳሌ: <code>500</code>")
         return
 
-    # Withdrawal account number
     if state == "waiting_wd_acct_num":
         account = text
         amount  = fb_get(f"temp_wd/{uid}/amount") or 0
         method  = fb_get(f"temp_wd/{uid}/method") or "—"
         balance = fb_get(f"users/{uid}/balance") or 0
+        display = m.from_user.username or m.from_user.first_name or uid
+
+        # Balance ቀንስ
         fb_set(f"users/{uid}/balance",            balance - amount)
         fb_set(f"users/{uid}/pending_withdrawal", amount)
+
+        # Withdrawal record
         result = fb_push("bot/withdrawals", {
             "user_id": uid,
-            "display": m.from_user.username or m.from_user.first_name or uid,
+            "display": display,
             "amount":  amount,
             "method":  method,
             "account": account,
@@ -772,28 +970,60 @@ def handle_text(m):
             "time":    datetime.now().strftime("%Y-%m-%d %H:%M")
         })
         wid = result.key if result else "unknown"
+
         fb_set(f"bot/state/{uid}", None)
         fb_set(f"temp_wd/{uid}", None)
-        bot.send_message(m.chat.id,
-            f"✅ <b>Withdrawal Request ተልኳል!</b>\n\n"
-            f"💰 {amount} ብር\n"
-            f"📲 {method} — <code>{account}</code>\n\n"
-            f"⏳ Admin ያስተናግዳቸዋል")
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("✅ Paid",   callback_data=f"wda_{wid}_{uid}_{amount}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"wdr_{wid}_{uid}_{amount}")
-        )
-        name = m.from_user.username or m.from_user.first_name
-        bot.send_message(ADMIN_ID,
-            f"🏧 <b>New Withdrawal</b>\n"
-            f"👤 {name} (<code>{uid}</code>)\n"
-            f"💰 {amount} ብር\n"
-            f"📲 {method} — <code>{account}</code>",
-            reply_markup=kb)
+
+        # ══ AUTO USSD ══
+        if is_ussd_supported(method):
+            # Queue ውስጥ ይጨምራል — MacroDroid ይወስደዋል
+            queued = queue_ussd_withdrawal(wid, uid, amount, method, account, display)
+
+            if queued:
+                bot.send_message(m.chat.id,
+                    f"✅ <b>Withdrawal Request ተቀብሏል!</b>\n\n"
+                    f"💰 {amount} ብር\n"
+                    f"📲 {method} — <code>{account}</code>\n\n"
+                    f"🤖 <b>Auto transfer እየተሰራ ነው...</b>\n"
+                    f"⏳ SMS ሲደርስ ያሳውቅዎታል")
+
+                # Admin notify — auto mode
+                bot.send_message(ADMIN_ID,
+                    f"🤖 <b>Auto USSD Withdrawal Queued</b>\n\n"
+                    f"👤 {display} (<code>{uid}</code>)\n"
+                    f"💰 {amount} ብር\n"
+                    f"📲 {method} — <code>{account}</code>\n\n"
+                    f"⏳ MacroDroid processing...")
+            else:
+                # Queue error — manual fallback
+                _send_manual_withdrawal(m, wid, uid, amount, method, account, display)
+        else:
+            # Awash/Other — manual
+            _send_manual_withdrawal(m, wid, uid, amount, method, account, display)
         return
 
     send_menu(m.chat.id)
+
+
+def _send_manual_withdrawal(m, wid, uid, amount, method, account, display):
+    """Manual withdrawal — Admin approve ያደርጋል"""
+    bot.send_message(m.chat.id,
+        f"✅ <b>Withdrawal Request ተልኳል!</b>\n\n"
+        f"💰 {amount} ብር\n"
+        f"📲 {method} — <code>{account}</code>\n\n"
+        f"⏳ Admin ያስተናግዳቸዋል")
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("✅ Paid",   callback_data=f"wda_{wid}_{uid}_{amount}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"wdr_{wid}_{uid}_{amount}")
+    )
+    bot.send_message(ADMIN_ID,
+        f"🏧 <b>Manual Withdrawal</b>\n"
+        f"👤 {display} (<code>{uid}</code>)\n"
+        f"💰 {amount} ብር\n"
+        f"📲 {method} — <code>{account}</code>",
+        reply_markup=kb)
+
 
 # ══════════════════════════════════════════════════════
 #  CALLBACKS
@@ -855,15 +1085,26 @@ def handle_callback(c):
         method = data.replace("wdm_", "")
         fb_set(f"temp_wd/{uid}/method", method)
         fb_set(f"bot/state/{uid}", "waiting_wd_acct_num")
-        bot.send_message(c.message.chat.id, f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
+
+        if method == "CBE":
+            bot.send_message(c.message.chat.id,
+                f"🏦 <b>CBE Account</b>\n\n🔢 Account number ላክ (13 digits):")
+        elif method == "Telebirr":
+            bot.send_message(c.message.chat.id,
+                f"📱 <b>Telebirr</b>\n\n🔢 Phone number ላክ (09xxxxxxxx):")
+        else:
+            bot.send_message(c.message.chat.id,
+                f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
 
     elif data.startswith("wda_"):
         parts  = data.split("_")
         wid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
         fb_set(f"bot/withdrawals/{wid}/status", "approved")
         fb_set(f"users/{u_id}/pending_withdrawal", 0)
-        wdSnap = fb_get("analytics/totalWithdrawals") or 0
-        fb_set("analytics/totalWithdrawals", wdSnap + amount)
+        wd_snap = fb_get("analytics/totalWithdrawals") or 0
+        fb_set("analytics/totalWithdrawals", wd_snap + amount)
+        # USSD queue ካለ ያጸዳዋል
+        fb_delete(f"bot/ussd_queue/{wid}")
         try:
             bot.edit_message_text(chat_id=c.message.chat.id,
                 message_id=c.message.message_id,
@@ -880,6 +1121,8 @@ def handle_callback(c):
         bal = fb_get(f"users/{u_id}/balance") or 0
         fb_set(f"users/{u_id}/balance", bal + amount)
         fb_set(f"users/{u_id}/pending_withdrawal", 0)
+        # USSD queue ካለ ያጸዳዋል
+        fb_delete(f"bot/ussd_queue/{wid}")
         try:
             bot.edit_message_text(chat_id=c.message.chat.id,
                 message_id=c.message.message_id,
@@ -922,10 +1165,12 @@ def handle_callback(c):
             bot.send_message(int(u_id), "❌ <b>Deposit Rejected</b>")
         except Exception: pass
 
+
 # ══════════════════════════════════════════════════════
-#  TIMEOUT CHECKER — 5 ደቂቃ SMS ካልደረሰ → Cancel
+#  TIMEOUT CHECKER
 # ══════════════════════════════════════════════════════
-MATCH_TIMEOUT = 5 * 60
+MATCH_TIMEOUT  = 5 * 60
+USSD_TIMEOUT   = 10 * 60  # 10 ደቂቃ USSD timeout
 
 def timeout_checker():
     while True:
@@ -936,7 +1181,6 @@ def timeout_checker():
             for pid, pay in list(payments.items()):
                 if pay.get("status") != "pending":
                     continue
-
                 created = pay.get("time", 0) / 1000
                 if now_ts - created < MATCH_TIMEOUT:
                     continue
@@ -948,7 +1192,6 @@ def timeout_checker():
 
                 fb_set(f"payments/{pid}/status", "cancelled")
                 fb_delete(f"temp/{uid}")
-
                 if ref:
                     fb_delete(f"bot/sms_pool/{ref.upper()}")
 
@@ -957,16 +1200,59 @@ def timeout_checker():
                         f"⏰ <b>Deposit Cancelled!</b>\n\n"
                         f"💰 {amount} ብር\n"
                         f"📋 REF: <code>{ref}</code>\n\n"
-                        f"⚠️ SMS 5 ደቂቃ ውስጥ አልደረሰም\n\n"
-                        f"እንደገና deposit ሞክር 👇")
+                        f"⚠️ SMS 5 ደቂቃ ውስጥ አልደረሰም\n\nእንደገና deposit ሞክር 👇")
                     send_menu(int(uid))
                 except Exception: pass
 
                 bot.send_message(ADMIN_ID,
                     f"⏰ <b>Timeout — Auto Cancelled</b>\n\n"
                     f"👤 {display} (<code>{uid}</code>)\n"
+                    f"💰 {amount} ብር\n📋 REF: <code>{ref}</code>")
+
+            # USSD queue timeout check
+            ussd_queue = fb_get("bot/ussd_queue") or {}
+            for task_id, task in list(ussd_queue.items()):
+                if task.get("status") not in ["waiting", "processing"]:
+                    continue
+                created = task.get("created_at", 0)
+                if now_ts - float(created) < USSD_TIMEOUT:
+                    continue
+
+                uid     = str(task.get("uid", ""))
+                amount  = task.get("amount", 0)
+                method  = task.get("method", "")
+                account = task.get("account", "")
+                wid     = task.get("wid", "")
+                display = task.get("display", uid)
+
+                fb_set(f"bot/ussd_queue/{task_id}/status", "timeout")
+                fb_set(f"bot/withdrawals/{wid}/status", "timeout")
+
+                # Balance ተመልሶ
+                bal = fb_get(f"users/{uid}/balance") or 0
+                fb_set(f"users/{uid}/balance", bal + amount)
+                fb_set(f"users/{uid}/pending_withdrawal", 0)
+
+                try:
+                    bot.send_message(int(uid),
+                        f"⏰ <b>Withdrawal Timeout!</b>\n\n"
+                        f"💰 {amount} ብር balance ላይ ተመለሰ\n"
+                        f"MacroDroid ምላሽ አልሰጠም\n\n"
+                        f"Admin ያናጋሩ ወይም እንደገና ሞክሩ")
+                except Exception: pass
+
+                kb = InlineKeyboardMarkup()
+                kb.add(
+                    InlineKeyboardButton("✅ Manual Pay",  callback_data=f"wda_{wid}_{uid}_{amount}"),
+                    InlineKeyboardButton("❌ Cancel",      callback_data=f"wdr_{wid}_{uid}_{amount}")
+                )
+                bot.send_message(ADMIN_ID,
+                    f"⏰ <b>USSD Timeout!</b>\n\n"
+                    f"👤 {display} (<code>{uid}</code>)\n"
                     f"💰 {amount} ብር\n"
-                    f"📋 REF: <code>{ref}</code>")
+                    f"📲 {method} — <code>{account}</code>\n\n"
+                    f"MacroDroid 10 ደቂቃ ምላሽ አልሰጠም:",
+                    reply_markup=kb)
 
         except Exception as e:
             print(f"Timeout checker error: {e}")
@@ -975,6 +1261,7 @@ def timeout_checker():
 
 threading.Thread(target=timeout_checker, daemon=True).start()
 
+
 # ══════════════════════════════════════════════════════
 #  DAILY REPORT
 # ══════════════════════════════════════════════════════
@@ -982,10 +1269,8 @@ def daily_report_loop():
     while True:
         now      = datetime.now()
         next_run = now.replace(
-            hour=DAILY_REPORT_HOUR,
-            minute=DAILY_REPORT_MINUTE,
-            second=0, microsecond=0
-        )
+            hour=DAILY_REPORT_HOUR, minute=DAILY_REPORT_MINUTE,
+            second=0, microsecond=0)
         if next_run <= now:
             next_run += timedelta(days=1)
         time.sleep((next_run - now).total_seconds())
@@ -994,12 +1279,12 @@ def daily_report_loop():
             withdrawals = fb_get("bot/withdrawals") or {}
             users       = fb_get("users") or {}
             today       = datetime.now().strftime("%Y-%m-%d")
-            today_ts    = datetime.now().replace(
-                hour=0, minute=0, second=0).timestamp() * 1000
-            dep_today = [p for p in payments.values()
-                         if p.get("time", 0) >= today_ts and p.get("status") == "approved"]
-            wd_today  = [w for w in withdrawals.values()
-                         if w.get("status") == "approved" and today in str(w.get("time",""))]
+            today_ts    = datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000
+            dep_today   = [p for p in payments.values()
+                           if p.get("time", 0) >= today_ts and p.get("status") == "approved"]
+            wd_today    = [w for w in withdrawals.values()
+                           if w.get("status") == "approved" and today in str(w.get("time",""))]
+            auto_wd     = [w for w in wd_today if w.get("ussd_done")]
             total_dep   = sum(p.get("amount", 0) for p in dep_today)
             total_wd    = sum(w.get("amount", 0) for w in wd_today)
             pend_dep    = sum(1 for p in payments.values() if p.get("status") == "pending")
@@ -1008,6 +1293,7 @@ def daily_report_loop():
                 f"📊 <b>Daily Report — {today}</b>\n\n"
                 f"💳 Deposits: <b>{len(dep_today)}</b> ({total_dep} ብር)\n"
                 f"🏧 Withdrawals: <b>{len(wd_today)}</b> ({total_wd} ብር)\n"
+                f"🤖 Auto USSD: <b>{len(auto_wd)}</b>\n"
                 f"⏳ Pending: {pend_dep}\n"
                 f"👥 Users: {len(users)}\n"
                 f"💰 Total Balance: {total_bal} ብር\n"
@@ -1017,10 +1303,11 @@ def daily_report_loop():
 
 threading.Thread(target=daily_report_loop, daemon=True).start()
 
+
 # ══════════════════════════════════════════════════════
 #  RUN
 # ══════════════════════════════════════════════════════
-print("Bingo Bot starting...")
+print("Bingo Bot starting with Auto USSD Withdrawal...")
 while True:
     try:
         bot.remove_webhook()
