@@ -90,17 +90,11 @@ def home():
     return "Bingo Bot is running"
 
 # ══════════════════════════════════════════════════════
-#  SMS WEBHOOK — SMS Forwarder App ከዚህ ይልካል
+#  SMS WEBHOOK
 # ══════════════════════════════════════════════════════
 @flask_app.route("/sms", methods=["POST"])
 def sms_webhook():
-    """
-    SMS Forwarder app ይህ endpoint ላይ SMS text ይልካል።
-    Expected JSON: {"text": "SMS content here"}
-    ወይም form data: text=...
-    """
     try:
-        # JSON ወይም form data ይቀበላል
         if flask_request.is_json:
             data = flask_request.get_json()
             sms_text = data.get("text", "") or data.get("sms", "") or data.get("message", "")
@@ -111,10 +105,7 @@ def sms_webhook():
             return jsonify({"status": "error", "message": "No SMS text"}), 400
 
         print(f"SMS Webhook received: {sms_text[:100]}")
-
-        # Threading ውስጥ ያስተናግዳል
         threading.Thread(target=handle_sms_from_webhook, args=(sms_text,), daemon=True).start()
-
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
@@ -125,24 +116,20 @@ def sms_webhook():
 def handle_sms_from_webhook(sms_text):
     """SMS text ተቀብሎ REF ያወጣል → pending payment ያዛምዳል → approve"""
     try:
-        # REF ማውጣት
         ref = extract_ref_from_text(sms_text)
         if not ref:
             bot.send_message(ADMIN_ID,
                 f"⚠️ <b>SMS ደረሰ ግን REF አልተገኘም</b>\n\n<code>{sms_text[:200]}</code>")
             return
 
-        # Amount ማውጣት
         amount = extract_amount_from_sms(sms_text)
 
-        # Duplicate ref check
         if is_dup_ref(ref):
             bot.send_message(ADMIN_ID, f"⚠️ Duplicate SMS REF: <code>{ref}</code>")
             return
 
         print(f"SMS REF: {ref}, Amount: {amount}")
 
-        # Pending payments ውስጥ REF ማዛመድ
         payments = fb_get("payments") or {}
         matched_pid = None
         matched_uid = None
@@ -157,10 +144,8 @@ def handle_sms_from_webhook(sms_text):
                 break
 
         if matched_pid and matched_uid:
-            # Match ተገኘ → Approve!
             do_approve(matched_pid, matched_uid, amount, ref, sms_text)
         else:
-            # Screenshot ገና አልደረሰም → SMS ያስቀምጣል ይጠብቃል
             fb_set(f"bot/sms_pool/{ref.upper()}", {
                 "ref": ref.upper(),
                 "amount": amount,
@@ -187,20 +172,15 @@ threading.Thread(target=run_flask, daemon=True).start()
 #  REF EXTRACTION
 # ══════════════════════════════════════════════════════
 def extract_ref_from_text(text):
-    """
-    ከ SMS ወይም ከ OCR text REF ያወጣል።
-    CBE  → FT... (URL ውስጥ ወይም text ውስጥ)
-    Telebirr → DE... (transaction number)
-    """
     if not text:
         return None
 
-    # CBE — URL ውስጥ: /BranchReceipt/FT26124GS887&41057146
+    # CBE — URL ውስጥ
     cbe_url = re.search(r'/BranchReceipt/([A-Z0-9]{8,20})&', text, re.IGNORECASE)
     if cbe_url:
         return cbe_url.group(1).upper()
 
-    # CBE — transaction ID: FT...
+    # CBE — transaction ID
     cbe_id = re.search(r'transaction\s*(?:ID|id)\s*:?\s*(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
     if cbe_id:
         return cbe_id.group(1).upper()
@@ -215,21 +195,22 @@ def extract_ref_from_text(text):
     if tel_num:
         return tel_num.group(1).upper()
 
-    # Telebirr Amharic — የግብይት ቁጥር
+    # Telebirr Amharic
     tel_am = re.search(r'የ[^\s]*ቁጥር[^\s]*\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
     if tel_am:
         return tel_am.group(1).upper()
 
-    # Telebirr receipt URL: /receipt/DE...
+    # Telebirr receipt URL
     tel_url = re.search(r'/receipt/([A-Z0-9]{8,16})', text, re.IGNORECASE)
     if tel_url:
         return tel_url.group(1).upper()
 
-    # Fallback — FT... ወይም DE... standalone
+    # Fallback — FT...
     ft = re.search(r'\b(FT[A-Z0-9]{6,16})\b', text, re.IGNORECASE)
     if ft:
         return ft.group(1).upper()
 
+    # Fallback — DE...
     de = re.search(r'\b(D[A-Z][A-Z0-9]{6,14})\b', text, re.IGNORECASE)
     if de:
         return de.group(1).upper()
@@ -238,28 +219,27 @@ def extract_ref_from_text(text):
 
 
 def extract_amount_from_sms(text):
-    """SMS ከ amount ያወጣል"""
     # CBE: credited with ETB 400
     cbe = re.search(r'credited\s+with\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
     if cbe:
         return float(cbe.group(1).replace(',', ''))
 
-    # Telebirr received: You have received ETB 100.00
+    # Telebirr received
     tel_recv = re.search(r'received\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
     if tel_recv:
         return float(tel_recv.group(1).replace(',', ''))
 
-    # Telebirr transferred: transferred ETB 2.00
+    # Telebirr transferred
     tel_trans = re.search(r'transferred\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
     if tel_trans:
         return float(tel_trans.group(1).replace(',', ''))
 
-    # CBE notification: Completed ETB200.61
+    # CBE notification
     cbe2 = re.search(r'Completed\s+ETB\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
     if cbe2:
         return float(cbe2.group(1).replace(',', ''))
 
-    # Telebirr Amharic: 200.00 ብር
+    # Telebirr Amharic
     am = re.search(r'([\d,]+\.?\d*)\s*ብር', text)
     if am:
         return float(am.group(1).replace(',', ''))
@@ -267,23 +247,19 @@ def extract_amount_from_sms(text):
     return 0.0
 
 # ══════════════════════════════════════════════════════
-#  OCR — Screenshot ከ REF ያወጣል (Groq Vision)
+#  OCR — Groq Vision
 # ══════════════════════════════════════════════════════
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 def extract_ref_from_screenshot(file_id):
-    """Screenshot ከ REF ያወጣል using Groq Vision"""
     try:
-        # ፎቶ ከ Telegram ያወርዳል
         file_info = bot.get_file(file_id)
         file_url  = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         response  = requests.get(file_url, timeout=15)
 
-        # Base64 encode
         import base64
         image_data = base64.b64encode(response.content).decode("utf-8")
 
-        # Groq Vision API
         groq_response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -323,10 +299,8 @@ def extract_ref_from_screenshot(file_id):
         if ref_text == "NONE" or not ref_text:
             return None
 
-        # REF pattern ያረጋግጣል
         ref = extract_ref_from_text(ref_text)
         if not ref:
-            # Groq ቀጥታ REF ከሰጠ
             clean = ref_text.upper().strip()
             if re.match(r'^[A-Z0-9]{8,20}$', clean):
                 return clean
@@ -374,7 +348,6 @@ def has_pending(uid):
 #  APPROVE
 # ══════════════════════════════════════════════════════
 def do_approve(pid, uid, amount, ref, sms_text=""):
-    """Payment approve ያደርጋል — amount ከ SMS ይወሰዳል"""
     try:
         amount = int(amount) if amount else 0
         if amount <= 0:
@@ -396,7 +369,6 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         dep_snap = fb_get("analytics/totalDeposits") or 0
         fb_set("analytics/totalDeposits", dep_snap + amount)
 
-        # User notify
         try:
             bot.send_message(int(uid),
                 f"✅ <b>Deposit Approved!</b>\n\n"
@@ -406,7 +378,6 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         except Exception as e:
             print(f"User notify error: {e}")
 
-        # Admin notify
         pay     = fb_get(f"payments/{pid}") or {}
         display = pay.get("display") or uid
         bot.send_message(ADMIN_ID,
@@ -420,24 +391,54 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         bot.send_message(ADMIN_ID, f"❌ Approve error: {e}\nREF: {ref}")
 
 # ══════════════════════════════════════════════════════
-#  SMS TELEGRAM HANDLER — SMS Forwarder → Telegram → Bot
+#  IS BANK SMS — የተስተካከለ ✅
 # ══════════════════════════════════════════════════════
 def is_bank_sms(text):
+    if not text:
+        return False
     t = text.lower()
-    return ("credited with etb" in t or
-            "you have received etb" in t or
-            "received etb" in t or
-            "transferred etb" in t or
-            "transaction number is" in t or
-            "has been credited" in t or
-            "branchreceipt" in t)
 
-@bot.message_handler(func=lambda m: m.text and is_bank_sms(m.text))
+    # SMS Forwarder format — From: 127 / From: CBE
+    if "from: 127" in t:
+        return True
+    if "from: cbe" in t:
+        return True
+    if "ethio telecom" in t:
+        return True
+
+    # CBE / Telebirr keywords
+    if "credited with etb" in t:
+        return True
+    if "you have received etb" in t:
+        return True
+    if "received etb" in t:
+        return True
+    if "transferred etb" in t:
+        return True
+    if "transaction number is" in t:
+        return True
+    if "has been credited" in t:
+        return True
+    if "branchreceipt" in t:
+        return True
+    if "bank transaction number" in t:
+        return True
+
+    # REF patterns — FT... ወይም DE...
+    if re.search(r'\bFT[A-Z0-9]{6,16}\b', text, re.IGNORECASE):
+        return True
+    if re.search(r'\bDE[A-Z0-9]{6,14}\b', text, re.IGNORECASE):
+        return True
+
+    return False
+
+
+# ══════════════════════════════════════════════════════
+#  SMS TELEGRAM HANDLER — የተስተካከለ ✅
+# ══════════════════════════════════════════════════════
+@bot.message_handler(func=lambda m: m.chat.id == ADMIN_ID and m.text and is_bank_sms(m.text))
 def handle_bank_sms(m):
-    # Admin ከልካለ ብቻ ይሰራል
-    if m.chat.id != ADMIN_ID:
-        return
-    print(f"Bank SMS received via Telegram: {m.text[:100]}")
+    print(f"Bank SMS via Telegram: {m.text[:100]}")
     threading.Thread(
         target=handle_sms_from_webhook,
         args=(m.text,),
@@ -459,13 +460,11 @@ def process_screenshot(m):
     amount  = temp.get("amount", 0)
     file_id = m.photo[-1].file_id if m.content_type == "photo" else m.document.file_id
 
-    # Duplicate screenshot check
     if is_dup_screenshot(file_id):
         bot.send_message(m.chat.id, "🚫 ይህ Screenshot አስቀድሞ ጥቅም ላይ ዋሏል!")
         fb_set(f"temp/{uid}", None)
         return
 
-    # Pending check
     if has_pending(uid):
         bot.send_message(m.chat.id, "⚠️ አስቀድሞ Pending Payment አለዎት!")
         return
@@ -473,11 +472,9 @@ def process_screenshot(m):
     save_screenshot_hash(file_id, uid, amount)
     bot.send_message(m.chat.id, "🔍 Screenshot እየተነበበ ነው...")
 
-    # OCR → REF
     ref = extract_ref_from_screenshot(file_id)
 
     if not ref:
-        # OCR ካልቻለ → user manually ይጽፋል
         fb_set(f"temp/{uid}/file_id", file_id)
         fb_set(f"bot/state/{uid}", "waiting_ref")
         bot.send_message(m.chat.id,
@@ -493,7 +490,6 @@ def process_screenshot(m):
         fb_set(f"temp/{uid}", None)
         return
 
-    # Payment Firebase ላይ ያስቀምጣል
     result = fb_push("payments", {
         "user_id":  uid,
         "display":  m.from_user.username or m.from_user.first_name or uid,
@@ -513,14 +509,12 @@ def process_screenshot(m):
     fb_set(f"temp/{uid}/pid", pid)
     fb_set(f"temp/{uid}/ref", ref.upper())
 
-    # SMS pool ውስጥ ተመሳሳይ REF አለ?
     sms_pool = fb_get("bot/sms_pool") or {}
     if ref.upper() in sms_pool:
         sms_data = sms_pool[ref.upper()]
         fb_delete(f"bot/sms_pool/{ref.upper()}")
         do_approve(pid, uid, sms_data.get("amount", 0), ref, sms_data.get("text", ""))
     else:
-        # SMS ይጠብቃል
         bot.send_message(m.chat.id,
             f"📸 Screenshot ተቀብሏል!\n"
             f"📋 REF: <code>{ref}</code>\n\n"
@@ -694,7 +688,6 @@ def handle_text(m):
         fb_set(f"temp/{uid}/pid", pid)
         fb_set(f"temp/{uid}/ref", ref.upper())
 
-        # SMS pool check
         sms_pool = fb_get("bot/sms_pool") or {}
         if ref.upper() in sms_pool:
             sms_data = sms_pool[ref.upper()]
@@ -868,7 +861,6 @@ def handle_callback(c):
         except Exception: pass
 
     elif data.startswith("ap_"):
-        # Manual admin approve
         parts  = data.split("_")
         pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
         bal    = fb_get(f"users/{u_id}/balance") or 0
@@ -903,7 +895,7 @@ def handle_callback(c):
 # ══════════════════════════════════════════════════════
 #  TIMEOUT CHECKER — 5 ደቂቃ SMS ካልደረሰ → Cancel
 # ══════════════════════════════════════════════════════
-MATCH_TIMEOUT = 5 * 60  # 5 ደቂቃ
+MATCH_TIMEOUT = 5 * 60
 
 def timeout_checker():
     while True:
@@ -919,7 +911,6 @@ def timeout_checker():
                 if now_ts - created < MATCH_TIMEOUT:
                     continue
 
-                # 5 ደቂቃ አለፈ → Cancel
                 uid     = str(pay.get("user_id"))
                 amount  = pay.get("amount", 0)
                 ref     = pay.get("ref", "")
@@ -928,11 +919,9 @@ def timeout_checker():
                 fb_set(f"payments/{pid}/status", "cancelled")
                 fb_delete(f"temp/{uid}")
 
-                # sms_pool ካለ አጽዳ
                 if ref:
                     fb_delete(f"bot/sms_pool/{ref.upper()}")
 
-                # User notify
                 try:
                     bot.send_message(int(uid),
                         f"⏰ <b>Deposit Cancelled!</b>\n\n"
@@ -943,7 +932,6 @@ def timeout_checker():
                     send_menu(int(uid))
                 except Exception: pass
 
-                # Admin notify
                 bot.send_message(ADMIN_ID,
                     f"⏰ <b>Timeout — Auto Cancelled</b>\n\n"
                     f"👤 {display} (<code>{uid}</code>)\n"
