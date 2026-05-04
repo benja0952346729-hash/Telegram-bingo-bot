@@ -24,6 +24,9 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 from flask import Flask, request as flask_request, jsonify
 
+# ══════════════════════════════════════════════════════
+#  CONFIG
+# ══════════════════════════════════════════════════════
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID         = 6883208728
 WEBAPP_URL       = "https://game-production-7f86.up.railway.app"
@@ -36,6 +39,9 @@ MAX_WITHDRAWAL   = 5000
 DAILY_REPORT_HOUR   = 20
 DAILY_REPORT_MINUTE = 0
 
+# ══════════════════════════════════════════════════════
+#  FIREBASE
+# ══════════════════════════════════════════════════════
 _key = os.environ.get("FIREBASE_KEY", "")
 if _key:
     cred = credentials.Certificate(json.loads(_key))
@@ -69,14 +75,23 @@ def fb_push(path, value):
         print(f"Firebase push error [{path}]: {e}")
         return None
 
+# ══════════════════════════════════════════════════════
+#  BOT
+# ══════════════════════════════════════════════════════
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
+# ══════════════════════════════════════════════════════
+#  FLASK
+# ══════════════════════════════════════════════════════
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
     return "Bingo Bot is running"
 
+# ══════════════════════════════════════════════════════
+#  SMS WEBHOOK
+# ══════════════════════════════════════════════════════
 @flask_app.route("/sms", methods=["POST"])
 def sms_webhook():
     try:
@@ -118,6 +133,7 @@ def sms_webhook():
 def handle_sms_from_webhook(sms_text):
     try:
         refs = extract_refs_from_text(sms_text)
+
         if not refs:
             bot.send_message(ADMIN_ID,
                 f"⚠️ <b>SMS ደረሰ ግን REF አልተገኘም</b>\n\n<code>{sms_text[:200]}</code>")
@@ -125,6 +141,7 @@ def handle_sms_from_webhook(sms_text):
 
         amount = extract_amount_from_sms(sms_text)
 
+        # ከሁለቱ 1 dup ከሆነ stop
         for ref in refs:
             if is_dup_ref(ref):
                 bot.send_message(ADMIN_ID, f"⚠️ Duplicate SMS REF: <code>{ref}</code>")
@@ -173,66 +190,110 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
+# ══════════════════════════════════════════════════════
+#  REF EXTRACTION — ሁለቱንም ያወጣል
+# ══════════════════════════════════════════════════════
 def extract_refs_from_text(text):
+    """ሁለቱንም REF ያወጣል — list ይመልሳል"""
     if not text:
         return []
+
     refs = []
+
+    # CBE — URL ውስጥ
     cbe_url = re.search(r'/BranchReceipt/([A-Z0-9]{8,20})&', text, re.IGNORECASE)
     if cbe_url:
         r = cbe_url.group(1).upper()
-        if r not in refs: refs.append(r)
+        if r not in refs:
+            refs.append(r)
+
+    # CBE — transaction ID
     cbe_id = re.search(r'transaction\s*(?:ID|id)\s*:?\s*(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
     if cbe_id:
         r = cbe_id.group(1).upper()
-        if r not in refs: refs.append(r)
+        if r not in refs:
+            refs.append(r)
+
+    # CBE — bank transaction number
     cbe_bank = re.search(r'bank\s+transaction\s+number\s+is\s+(FT[A-Z0-9]{6,16})', text, re.IGNORECASE)
     if cbe_bank:
         r = cbe_bank.group(1).upper()
-        if r not in refs: refs.append(r)
+        if r not in refs:
+            refs.append(r)
+
+    # Telebirr — transaction number
     tel_num = re.search(r'(?<!bank\s)transaction\s+number\s+is\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
     if tel_num:
         r = tel_num.group(1).upper()
-        if r not in refs: refs.append(r)
+        if r not in refs:
+            refs.append(r)
+
+    # Telebirr — receipt URL
     tel_url = re.search(r'/receipt/([A-Z0-9]{8,16})', text, re.IGNORECASE)
     if tel_url:
         r = tel_url.group(1).upper()
-        if r not in refs: refs.append(r)
+        if r not in refs:
+            refs.append(r)
+
+    # Telebirr Amharic
     tel_am = re.search(r'የ[^\s]*ቁጥር[^\s]*\s+([A-Z0-9]{8,16})', text, re.IGNORECASE)
     if tel_am:
         r = tel_am.group(1).upper()
-        if r not in refs: refs.append(r)
+        if r not in refs:
+            refs.append(r)
+
+    # Fallback — FT...
     for ft in re.findall(r'\b(FT[A-Z0-9]{6,16})\b', text, re.IGNORECASE):
-        if ft.upper() not in refs: refs.append(ft.upper())
+        if ft.upper() not in refs:
+            refs.append(ft.upper())
+
+    # Fallback — DE...
     for de in re.findall(r'\b(DE[A-Z0-9]{6,14})\b', text, re.IGNORECASE):
-        if de.upper() not in refs: refs.append(de.upper())
+        if de.upper() not in refs:
+            refs.append(de.upper())
+
     return refs
 
+
 def extract_ref_from_text(text):
+    """Single REF — backward compat"""
     refs = extract_refs_from_text(text)
     return refs[0] if refs else None
 
+
 def extract_amount_from_sms(text):
     cbe = re.search(r'credited\s+with\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if cbe: return float(cbe.group(1).replace(',', ''))
+    if cbe:
+        return float(cbe.group(1).replace(',', ''))
     tel_recv = re.search(r'received\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if tel_recv: return float(tel_recv.group(1).replace(',', ''))
+    if tel_recv:
+        return float(tel_recv.group(1).replace(',', ''))
     tel_trans = re.search(r'transferred\s+ETB\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if tel_trans: return float(tel_trans.group(1).replace(',', ''))
+    if tel_trans:
+        return float(tel_trans.group(1).replace(',', ''))
     cbe2 = re.search(r'Completed\s+ETB\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
-    if cbe2: return float(cbe2.group(1).replace(',', ''))
+    if cbe2:
+        return float(cbe2.group(1).replace(',', ''))
     am = re.search(r'([\d,]+\.?\d*)\s*ብር', text)
-    if am: return float(am.group(1).replace(',', ''))
+    if am:
+        return float(am.group(1).replace(',', ''))
     return 0.0
 
+# ══════════════════════════════════════════════════════
+#  OCR — Groq Vision
+# ══════════════════════════════════════════════════════
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 def extract_refs_from_screenshot(file_id):
+    """Screenshot ውስጥ ያሉ ሁሉም REF ያወጣል"""
     try:
         file_info = bot.get_file(file_id)
         file_url  = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         response  = requests.get(file_url, timeout=15)
+
         import base64
         image_data = base64.b64encode(response.content).decode("utf-8")
+
         groq_response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -241,36 +302,55 @@ def extract_refs_from_screenshot(file_id):
             },
             json={
                 "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
-                        {"type": "text", "text": "Extract ALL transaction reference numbers from this payment screenshot. Look for: FT followed by letters/numbers (CBE bank transaction), DE followed by letters/numbers (Telebirr transaction). There may be TWO reference numbers. Reply with ONLY the reference numbers separated by comma, nothing else. Example: DE49IZZB05,FT26124HX4GY. If not found, reply: NONE"}
-                    ]
-                }],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}
+                            },
+                            {
+                                "type": "text",
+                                "text": "Extract ALL transaction reference numbers from this payment screenshot. Look for: FT followed by letters/numbers (CBE bank transaction), DE followed by letters/numbers (Telebirr transaction). There may be TWO reference numbers. Reply with ONLY the reference numbers separated by comma, nothing else. Example: DE49IZZB05,FT26124HX4GY. If not found, reply: NONE"
+                            }
+                        ]
+                    }
+                ],
                 "max_tokens": 100
             },
             timeout=30
         )
+
         result = groq_response.json()
         ref_text = result["choices"][0]["message"]["content"].strip()
         print(f"Groq REF text: {ref_text}")
+
         if ref_text == "NONE" or not ref_text:
             return []
+
+        # comma separated → list
         parts = [p.strip().upper() for p in ref_text.split(",")]
         refs  = []
         for part in parts:
             extracted = extract_refs_from_text(part)
             if extracted:
                 for r in extracted:
-                    if r not in refs: refs.append(r)
+                    if r not in refs:
+                        refs.append(r)
             elif re.match(r'^[A-Z0-9]{8,20}$', part):
-                if part not in refs: refs.append(part)
+                if part not in refs:
+                    refs.append(part)
+
         return refs
+
     except Exception as e:
         print(f"Groq OCR error: {e}")
         return []
 
+# ══════════════════════════════════════════════════════
+#  DUPLICATE CHECKS
+# ══════════════════════════════════════════════════════
 def hash_file(file_id):
     return hashlib.sha256(file_id.encode()).hexdigest()
 
@@ -301,6 +381,9 @@ def has_pending(uid):
             return True
     return False
 
+# ══════════════════════════════════════════════════════
+#  APPROVE
+# ══════════════════════════════════════════════════════
 def do_approve(pid, uid, amount, ref, sms_text=""):
     try:
         amount = int(amount) if amount else 0
@@ -308,16 +391,21 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
             bot.send_message(ADMIN_ID,
                 f"⚠️ Amount 0 ነው! Manual check:\n👤 <code>{uid}</code>\n📋 <code>{ref}</code>")
             return
+
         bal     = fb_get(f"users/{uid}/balance") or 0
         new_bal = bal + amount
+
         fb_set(f"users/{uid}/balance",     new_bal)
         fb_set(f"payments/{pid}/status",   "approved")
         fb_set(f"payments/{pid}/verified", True)
         fb_set(f"payments/{pid}/ref",      ref)
         fb_set(f"temp/{uid}",              None)
+
         save_ref(ref, uid, amount)
+
         dep_snap = fb_get("analytics/totalDeposits") or 0
         fb_set("analytics/totalDeposits", dep_snap + amount)
+
         try:
             bot.send_message(int(uid),
                 f"✅ <b>Deposit Approved!</b>\n\n"
@@ -325,6 +413,7 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
                 f"💼 New Balance: <b>{new_bal} ብር</b>")
         except Exception as e:
             print(f"User notify error: {e}")
+
         pay     = fb_get(f"payments/{pid}") or {}
         display = pay.get("display") or uid
         bot.send_message(ADMIN_ID,
@@ -332,12 +421,17 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
             f"👤 {display} (<code>{uid}</code>)\n"
             f"💰 {amount} ብር\n"
             f"📋 REF: <code>{ref}</code>")
+
     except Exception as e:
         print(f"do_approve error: {e}")
         bot.send_message(ADMIN_ID, f"❌ Approve error: {e}\nREF: {ref}")
 
+# ══════════════════════════════════════════════════════
+#  IS BANK SMS
+# ══════════════════════════════════════════════════════
 def is_bank_sms(text):
-    if not text: return False
+    if not text:
+        return False
     t = text.lower()
     if "from: 127" in t: return True
     if "from: cbe" in t: return True
@@ -353,7 +447,11 @@ def is_bank_sms(text):
     if re.search(r'\bFT[A-Z0-9]{6,16}\b', text, re.IGNORECASE): return True
     if re.search(r'\bDE[A-Z0-9]{6,14}\b', text, re.IGNORECASE): return True
     return False
-    def process_screenshot(m):
+
+# ══════════════════════════════════════════════════════
+#  SCREENSHOT HANDLER — ለውጦች ✅
+# ══════════════════════════════════════════════════════
+def process_screenshot(m):
     uid  = str(m.from_user.id)
     temp = fb_get(f"temp/{uid}")
 
@@ -365,6 +463,7 @@ def is_bank_sms(text):
     amount  = temp.get("amount", 0)
     file_id = m.photo[-1].file_id if m.content_type == "photo" else m.document.file_id
 
+    # ── ① Duplicate screenshot check ──────────────────
     if is_dup_screenshot(file_id):
         bot.send_message(m.chat.id, "🚫 ይህ Screenshot አስቀድሞ ጥቅም ላይ ዋሏል!")
         fb_set(f"temp/{uid}", None)
@@ -375,15 +474,20 @@ def is_bank_sms(text):
         return
 
     bot.send_message(m.chat.id, "🔍 Screenshot እየተነበበ ነው...")
+
     refs = extract_refs_from_screenshot(file_id)
 
+    # ── ② OCR ካልቻለ → retry logic (REF አትጠይቅ) ───────
     if not refs:
         retry_count = temp.get("retry_count", 0) + 1
         fb_set(f"temp/{uid}/retry_count", retry_count)
+
         if retry_count < 3:
             bot.send_message(m.chat.id,
-                f"⚠️ Screenshot ጥራት የለውም — ድጋሚ ላክ\n\n📸 <b>ግልጽ የሆነ screenshot ላክ</b>")
+                f"⚠️ Screenshot ጥራት የለውም — ድጋሚ ላክ\n\n"
+                f"📸 <b>ግልጽ የሆነ screenshot ላክ</b>")
         else:
+            # 3ኛ ሙከራ ካልሰራ → admin manual approve
             save_screenshot_hash(file_id, uid, amount)
             result = fb_push("payments", {
                 "user_id":  uid,
@@ -399,27 +503,30 @@ def is_bank_sms(text):
                 pid = result.key
                 fb_set(f"temp/{uid}/pid", pid)
                 fb_set(f"temp/{uid}/retry_count", 0)
-                bot.send_message(m.chat.id, "📸 Screenshot ተቀብሏል!\n\n⏳ Admin እያረጋገጠ ነው...")
+                bot.send_message(m.chat.id,
+                    "📸 Screenshot ተቀብሏል!\n\n⏳ Admin እያረጋገጠ ነው...")
                 try:
-                    # ✅ Notification only — no buttons
                     bot.send_photo(ADMIN_ID, file_id,
                         caption=f"📸 <b>New Screenshot (REF አልተነበበም)</b>\n\n"
                                 f"👤 {m.from_user.username or m.from_user.first_name} (<code>{uid}</code>)\n"
                                 f"💰 {amount} ብር\n\n"
-                                f"⚠️ Admin Panel ላይ ያረጋግጡ")
+                                f"⚠️ Admin Panel ላይ ያረጋግጡ",
+                        reply_markup=None)
                 except Exception:
                     pass
-        return
 
+    # ── ③ Duplicate REF check ─────────────────────────
     for ref in refs:
         if is_dup_ref(ref):
             bot.send_message(m.chat.id, f"🚫 ይህ ደረሰኝ አስቀድሞ ጥቅም ላይ ዋሏል!")
             fb_set(f"temp/{uid}", None)
             return
 
+    # ── ④ Hash save & push payment ────────────────────
     save_screenshot_hash(file_id, uid, amount)
     fb_set(f"temp/{uid}/retry_count", 0)
 
+    # Primary REF (user ያስገባው ወይም የመጀመሪያ)
     primary_ref = temp.get("ref", refs[0]).upper()
     if primary_ref not in refs:
         primary_ref = refs[0]
@@ -443,6 +550,7 @@ def is_bank_sms(text):
     fb_set(f"temp/{uid}/pid", pid)
     fb_set(f"temp/{uid}/ref", primary_ref)
 
+    # ── ⑤ SMS pool check — ከሁለቱ 1 match ────────────
     sms_pool = fb_get("bot/sms_pool") or {}
     matched_sms = None
     matched_sms_ref = None
@@ -459,15 +567,23 @@ def is_bank_sms(text):
             save_ref(ref, uid, matched_sms.get("amount", 0))
         do_approve(pid, uid, matched_sms.get("amount", 0), matched_sms_ref, matched_sms.get("text", ""))
     else:
-        bot.send_message(m.chat.id, f"📸 Screenshot ተቀብሏል!\n\n⏳ እየተረጋገጠ ነው...")
+        bot.send_message(m.chat.id,
+            f"📸 Screenshot ተቀብሏል!\n\n⏳ እየተረጋገጠ ነው...")
+
         try:
-            # ✅ Notification only — no buttons
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton("✅ Approve", callback_data=f"ap_{pid}_{uid}_{amount}"),
+                InlineKeyboardButton("❌ Reject",  callback_data=f"re_{pid}_{uid}")
+            )
+            # Admin ሁለቱንም REF ያያቸዋል — user አያያቸውም ✅
             bot.send_photo(ADMIN_ID, file_id,
                 caption=f"📸 <b>New Screenshot</b>\n\n"
                         f"👤 {m.from_user.username or m.from_user.first_name} (<code>{uid}</code>)\n"
                         f"💰 {amount} ብር\n"
                         f"📋 REFs: {' | '.join(f'<code>{r}</code>' for r in refs)}\n\n"
-                        f"⚠️ Admin Panel ላይ Approve/Reject ያድርጉ")
+                        f"⏳ SMS እየጠበቀ ነው...",
+                reply_markup=kb)
         except Exception:
             pass
 
@@ -476,6 +592,9 @@ def is_bank_sms(text):
 def handle_screenshot(m):
     threading.Thread(target=process_screenshot, args=(m,), daemon=True).start()
 
+# ══════════════════════════════════════════════════════
+#  COMMANDS
+# ══════════════════════════════════════════════════════
 def send_menu(chat_id):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎮 Play Game",
@@ -494,6 +613,7 @@ def send_menu(chat_id):
         "💰 Balance ለማየት → <b>Balance</b> ምረጥ",
         reply_markup=kb)
 
+
 @bot.message_handler(commands=["start"])
 def cmd_start(m):
     uid     = str(m.chat.id)
@@ -503,6 +623,7 @@ def cmd_start(m):
     fb_set(f"users/{uid}/display",  display)
     fb_set(f"users/{uid}/username", display)
     send_menu(m.chat.id)
+
 
 @bot.message_handler(commands=["balance"])
 def cmd_balance(m):
@@ -514,9 +635,11 @@ def cmd_balance(m):
         text += f"\n⏳ Pending Withdrawal: {pending_wd} ብር"
     bot.send_message(m.chat.id, text)
 
+
 @bot.message_handler(commands=["stats"])
 def cmd_stats(m):
-    if m.chat.id != ADMIN_ID: return
+    if m.chat.id != ADMIN_ID:
+        return
     users    = fb_get("users") or {}
     payments = fb_get("payments") or {}
     approved = [p for p in payments.values() if p.get("status") == "approved"]
@@ -529,25 +652,31 @@ def cmd_stats(m):
         f"💰 Total Deposits: {total_dep} ብር\n"
         f"💼 Total Balance: {total_bal} ብር")
 
+
 @bot.message_handler(commands=["pending"])
 def show_pending(m):
-    if m.chat.id != ADMIN_ID: return
+    if m.chat.id != ADMIN_ID:
+        return
     payments = fb_get("payments") or {}
     pending  = [(pid, p) for pid, p in payments.items() if p.get("status") == "pending"]
     if not pending:
-        bot.send_message(m.chat.id, "✅ ምንም pending የለም"); return
+        bot.send_message(m.chat.id, "✅ ምንም pending የለም")
+        return
     lines = [f"⏳ <b>Pending ({len(pending)}):</b>\n"]
     for pid, p in pending[:10]:
         t = datetime.fromtimestamp(p.get("time", 0)/1000).strftime("%m/%d %H:%M") if p.get("time") else "—"
         lines.append(f"• {p.get('display','?')} — {p.get('amount',0)} ብር — {t}")
     bot.send_message(m.chat.id, "\n".join(lines))
 
+
 @bot.message_handler(commands=["clearpending"])
 def clear_pending(m):
-    if m.chat.id != ADMIN_ID: return
+    if m.chat.id != ADMIN_ID:
+        return
     parts = m.text.split()
     if len(parts) < 2:
-        bot.send_message(m.chat.id, "Usage: /clearpending <user_id>"); return
+        bot.send_message(m.chat.id, "Usage: /clearpending <user_id>")
+        return
     uid      = parts[1]
     fb_set(f"temp/{uid}", None)
     payments = fb_get("payments") or {}
@@ -559,6 +688,9 @@ def clear_pending(m):
     bot.send_message(m.chat.id,
         f"✅ User <code>{uid}</code> cleared!\n📋 {count} pending cancelled.")
 
+# ══════════════════════════════════════════════════════
+#  TEXT HANDLER
+# ══════════════════════════════════════════════════════
 ALLOWED_SMS_SENDERS = [ADMIN_ID]
 
 @bot.message_handler(func=lambda m: True, content_types=["text"])
@@ -574,6 +706,7 @@ def handle_text(m):
         threading.Thread(target=handle_sms_from_webhook, args=(text,), daemon=True).start()
         return
 
+    # Withdrawal amount
     if state == "waiting_wd_amount":
         try:
             amount  = int(text)
@@ -599,6 +732,7 @@ def handle_text(m):
             bot.send_message(m.chat.id, "❌ ቁጥር ብቻ ላክ! ለምሳሌ: <code>500</code>")
         return
 
+    # Withdrawal account number
     if state == "waiting_wd_acct_num":
         account = text
         amount  = fb_get(f"temp_wd/{uid}/amount") or 0
@@ -624,17 +758,19 @@ def handle_text(m):
             f"📲 {method} — <code>{account}</code>\n\n"
             f"⏳ Admin ያስተናግዳቸዋል")
         name = m.from_user.username or m.from_user.first_name
-        # ✅ Notification only — no buttons
         bot.send_message(ADMIN_ID,
             f"🏧 <b>New Withdrawal</b>\n"
             f"👤 {name} (<code>{uid}</code>)\n"
             f"💰 {amount} ብር\n"
             f"📲 {method} — <code>{account}</code>\n\n"
-            f"⚠️ Admin Panel ላይ Approve/Reject ያድርጉ")
+            f"⚠️ Admin Panel ላይ ያስተናግዱ")
         return
 
     send_menu(m.chat.id)
 
+# ══════════════════════════════════════════════════════
+#  CALLBACKS
+# ══════════════════════════════════════════════════════
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(c):
     bot.answer_callback_query(c.id)
@@ -694,6 +830,44 @@ def handle_callback(c):
         fb_set(f"bot/state/{uid}", "waiting_wd_acct_num")
         bot.send_message(c.message.chat.id, f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
 
+    elif data.startswith("ap_"):
+        parts  = data.split("_")
+        pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
+        bal    = fb_get(f"users/{u_id}/balance") or 0
+        fb_set(f"users/{u_id}/balance", bal + amount)
+        fb_set(f"payments/{pid}/status", "approved")
+        dep_snap = fb_get("analytics/totalDeposits") or 0
+        fb_set("analytics/totalDeposits", dep_snap + amount)
+        try:
+            bot.edit_message_caption(chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                caption=c.message.caption + "\n\n✅ <b>MANUALLY APPROVED</b>")
+        except Exception: pass
+        try:
+            bot.send_message(int(u_id),
+                f"✅ <b>{amount} ብር</b> ታከለ!\nBalance: <b>{bal+amount} ብር</b>")
+        except Exception: pass
+
+    elif data.startswith("re_"):
+        parts = data.split("_")
+        pid   = parts[1]; u_id = parts[2]
+        fb_set(f"payments/{pid}/status", "rejected")
+        # ── Reject ሲሆን hash አያስቀምጥ — ድጋሚ ይሞክሩ ✅ ──
+        fb_set(f"temp/{u_id}/retry_count", 0)
+        try:
+            bot.edit_message_caption(chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                caption=c.message.caption + "\n\n❌ <b>REJECTED</b>")
+        except Exception: pass
+        try:
+            bot.send_message(int(u_id),
+                "📸 Screenshot ጥራት የለውም\n\n"
+                "ግልጽ የሆነ screenshot ድጋሚ ላክ 👇")
+        except Exception: pass
+
+# ══════════════════════════════════════════════════════
+#  TIMEOUT CHECKER
+# ══════════════════════════════════════════════════════
 MATCH_TIMEOUT = 5 * 60
 
 def timeout_checker():
@@ -701,18 +875,25 @@ def timeout_checker():
         try:
             now_ts   = datetime.now().timestamp()
             payments = fb_get("payments") or {}
+
             for pid, pay in list(payments.items()):
-                if pay.get("status") != "pending": continue
+                if pay.get("status") != "pending":
+                    continue
                 created = pay.get("time", 0) / 1000
-                if now_ts - created < MATCH_TIMEOUT: continue
+                if now_ts - created < MATCH_TIMEOUT:
+                    continue
+
                 uid     = str(pay.get("user_id"))
                 amount  = pay.get("amount", 0)
                 ref     = pay.get("ref", "")
                 display = pay.get("display") or uid
+
                 fb_set(f"payments/{pid}/status", "cancelled")
                 fb_delete(f"temp/{uid}")
+
                 if ref:
                     fb_delete(f"bot/sms_pool/{ref.upper()}")
+
                 try:
                     bot.send_message(int(uid),
                         f"⏰ <b>Deposit Cancelled!</b>\n\n"
@@ -721,23 +902,47 @@ def timeout_checker():
                         f"እንደገና deposit ሞክር 👇")
                     send_menu(int(uid))
                 except Exception: pass
+
                 bot.send_message(ADMIN_ID,
                     f"⏰ <b>Timeout — Auto Cancelled</b>\n\n"
                     f"👤 {display} (<code>{uid}</code>)\n"
                     f"💰 {amount} ብር\n"
                     f"📋 REF: <code>{ref}</code>")
+
         except Exception as e:
             print(f"Timeout checker error: {e}")
+
         time.sleep(30)
 
 threading.Thread(target=timeout_checker, daemon=True).start()
+def notification_listener():
+    while True:
+        try:
+            users = fb_get("notifications") or {}
+            for uid, notif in users.items():
+                if notif and not notif.get("read"):
+                    try:
+                        bot.send_message(int(uid), notif.get("message",""))
+                        fb_set(f"notifications/{uid}/read", True)
+                    except Exception as e:
+                        print(f"Notify error {uid}: {e}")
+        except Exception as e:
+            print(f"Notification listener error: {e}")
+        time.sleep(5)
 
+threading.Thread(target=notification_listener, daemon=True).start()
+
+# ══════════════════════════════════════════════════════
+#  DAILY REPORT
+# ══════════════════════════════════════════════════════
 def daily_report_loop():
     while True:
         now      = datetime.now()
         next_run = now.replace(
-            hour=DAILY_REPORT_HOUR, minute=DAILY_REPORT_MINUTE,
-            second=0, microsecond=0)
+            hour=DAILY_REPORT_HOUR,
+            minute=DAILY_REPORT_MINUTE,
+            second=0, microsecond=0
+        )
         if next_run <= now:
             next_run += timedelta(days=1)
         time.sleep((next_run - now).total_seconds())
@@ -746,15 +951,16 @@ def daily_report_loop():
             withdrawals = fb_get("bot/withdrawals") or {}
             users       = fb_get("users") or {}
             today       = datetime.now().strftime("%Y-%m-%d")
-            today_ts    = datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000
+            today_ts    = datetime.now().replace(
+                hour=0, minute=0, second=0).timestamp() * 1000
             dep_today = [p for p in payments.values()
                          if p.get("time", 0) >= today_ts and p.get("status") == "approved"]
             wd_today  = [w for w in withdrawals.values()
                          if w.get("status") == "approved" and today in str(w.get("time",""))]
-            total_dep = sum(p.get("amount", 0) for p in dep_today)
-            total_wd  = sum(w.get("amount", 0) for w in wd_today)
-            pend_dep  = sum(1 for p in payments.values() if p.get("status") == "pending")
-            total_bal = sum((u.get("balance") or 0) for u in users.values())
+            total_dep   = sum(p.get("amount", 0) for p in dep_today)
+            total_wd    = sum(w.get("amount", 0) for w in wd_today)
+            pend_dep    = sum(1 for p in payments.values() if p.get("status") == "pending")
+            total_bal   = sum((u.get("balance") or 0) for u in users.values())
             bot.send_message(ADMIN_ID,
                 f"📊 <b>Daily Report — {today}</b>\n\n"
                 f"💳 Deposits: <b>{len(dep_today)}</b> ({total_dep} ብር)\n"
@@ -768,6 +974,9 @@ def daily_report_loop():
 
 threading.Thread(target=daily_report_loop, daemon=True).start()
 
+# ══════════════════════════════════════════════════════
+#  RUN
+# ══════════════════════════════════════════════════════
 print("Bingo Bot starting...")
 while True:
     try:
