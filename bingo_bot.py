@@ -95,22 +95,46 @@ def home():
 @flask_app.route("/sms", methods=["POST"])
 def sms_webhook():
     try:
+        sms_text = ""
+
+        # JSON format
         if flask_request.is_json:
-            data = flask_request.get_json()
-            sms_text = data.get("text", "") or data.get("sms", "") or data.get("message", "")
-        else:
-            sms_text = flask_request.form.get("text", "") or flask_request.form.get("sms", "")
+            data = flask_request.get_json(force=True, silent=True) or {}
+            sms_text = data.get("text", "") or data.get("sms", "") or data.get("message", "") or data.get("body", "")
+        
+        # Form data format
+        if not sms_text:
+            sms_text = (flask_request.form.get("text", "") or 
+                       flask_request.form.get("sms", "") or
+                       flask_request.form.get("body", "") or
+                       flask_request.form.get("message", ""))
+        
+        # Raw body format
+        if not sms_text:
+            try:
+                raw = flask_request.get_data(as_text=True)
+                if raw:
+                    import urllib.parse
+                    parsed = urllib.parse.parse_qs(raw)
+                    sms_text = (parsed.get("text", [""])[0] or 
+                               parsed.get("body", [""])[0] or
+                               parsed.get("sms", [""])[0])
+                if not sms_text:
+                    sms_text = raw
+            except:
+                pass
+
+        print(f"SMS Webhook received: {sms_text[:100] if sms_text else 'EMPTY'}")
 
         if not sms_text:
-            return jsonify({"status": "error", "message": "No SMS text"}), 400
+            return jsonify({"status": "ok"}), 200
 
-        print(f"SMS Webhook received: {sms_text[:100]}")
         threading.Thread(target=handle_sms_from_webhook, args=(sms_text,), daemon=True).start()
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
         print(f"SMS webhook error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "ok"}), 200
 
 
 def handle_sms_from_webhook(sms_text):
