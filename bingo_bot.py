@@ -394,31 +394,6 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         bot.send_message(ADMIN_ID, f"❌ Approve error: {e}\nREF: {ref}")
 
 # ══════════════════════════════════════════════════════
-#  SMS TELEGRAM HANDLER — SMS Forwarder → Telegram → Bot
-# ══════════════════════════════════════════════════════
-def is_bank_sms(text):
-    t = text.lower()
-    return ("credited with etb" in t or
-            "you have received etb" in t or
-            "received etb" in t or
-            "transferred etb" in t or
-            "transaction number is" in t or
-            "has been credited" in t or
-            "branchreceipt" in t)
-
-@bot.message_handler(func=lambda m: m.text and is_bank_sms(m.text))
-def handle_bank_sms(m):
-    # Admin ከልካለ ብቻ ይሰራል
-    if m.chat.id != ADMIN_ID:
-        return
-    print(f"Bank SMS received via Telegram: {m.text[:100]}")
-    threading.Thread(
-        target=handle_sms_from_webhook,
-        args=(m.text,),
-        daemon=True
-    ).start()
-
-# ══════════════════════════════════════════════════════
 #  SCREENSHOT HANDLER
 # ══════════════════════════════════════════════════════
 def process_screenshot(m):
@@ -501,18 +476,11 @@ def process_screenshot(m):
             f"⏳ SMS verification እየጠበቀ ነው...")
 
         try:
-            kb = InlineKeyboardMarkup()
-            kb.add(
-                InlineKeyboardButton("✅ Approve", callback_data=f"ap_{pid}_{uid}_{amount}"),
-                InlineKeyboardButton("❌ Reject",  callback_data=f"re_{pid}_{uid}")
-            )
             bot.send_photo(ADMIN_ID, file_id,
-                caption=f"📸 <b>New Screenshot</b>\n\n"
+                caption=f"📸 New Screenshot\n"
                         f"👤 {m.from_user.username or m.from_user.first_name} (<code>{uid}</code>)\n"
                         f"💰 {amount} ብር\n"
-                        f"📋 REF: <code>{ref}</code>\n\n"
-                        f"⏳ SMS እየጠበቀ ነው...",
-                reply_markup=kb)
+                        f"📋 REF: <code>{ref}</code>")
         except Exception:
             pass
 
@@ -873,63 +841,6 @@ def handle_callback(c):
         try:
             bot.send_message(int(u_id), "❌ <b>Deposit Rejected</b>")
         except Exception: pass
-
-# ══════════════════════════════════════════════════════
-#  TIMEOUT CHECKER — 5 ደቂቃ SMS ካልደረሰ → Cancel
-# ══════════════════════════════════════════════════════
-MATCH_TIMEOUT = 5 * 60  # 5 ደቂቃ
-
-def timeout_checker():
-    while True:
-        try:
-            now_ts   = datetime.now().timestamp()
-            payments = fb_get("payments") or {}
-
-            for pid, pay in list(payments.items()):
-                if pay.get("status") != "pending":
-                    continue
-
-                created = pay.get("time", 0) / 1000
-                if now_ts - created < MATCH_TIMEOUT:
-                    continue
-
-                # 5 ደቂቃ አለፈ → Cancel
-                uid     = str(pay.get("user_id"))
-                amount  = pay.get("amount", 0)
-                ref     = pay.get("ref", "")
-                display = pay.get("display") or uid
-
-                fb_set(f"payments/{pid}/status", "cancelled")
-                fb_delete(f"temp/{uid}")
-
-                # sms_pool ካለ አጽዳ
-                if ref:
-                    fb_delete(f"bot/sms_pool/{ref.upper()}")
-
-                # User notify
-                try:
-                    bot.send_message(int(uid),
-                        f"⏰ <b>Deposit Cancelled!</b>\n\n"
-                        f"💰 {amount} ብር\n"
-                        f"📋 REF: <code>{ref}</code>\n\n"
-                        f"⚠️ SMS 5 ደቂቃ ውስጥ አልደረሰም\n\n"
-                        f"እንደገና deposit ሞክር 👇")
-                    send_menu(int(uid))
-                except Exception: pass
-
-                # Admin notify
-                bot.send_message(ADMIN_ID,
-                    f"⏰ <b>Timeout — Auto Cancelled</b>\n\n"
-                    f"👤 {display} (<code>{uid}</code>)\n"
-                    f"💰 {amount} ብር\n"
-                    f"📋 REF: <code>{ref}</code>")
-
-        except Exception as e:
-            print(f"Timeout checker error: {e}")
-
-        time.sleep(30)
-
-threading.Thread(target=timeout_checker, daemon=True).start()
 
 # ══════════════════════════════════════════════════════
 #  DAILY REPORT
