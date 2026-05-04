@@ -267,48 +267,74 @@ def extract_amount_from_sms(text):
     return 0.0
 
 # ══════════════════════════════════════════════════════
-#  OCR — Screenshot ከ REF ያወጣል
+#  OCR — Screenshot ከ REF ያወጣል (Groq Vision)
 # ══════════════════════════════════════════════════════
-_ocr_reader = None
-_ocr_lock   = threading.Lock()
-
-def get_ocr_reader():
-    global _ocr_reader
-    if _ocr_reader is None:
-        with _ocr_lock:
-            if _ocr_reader is None:
-                try:
-                    import easyocr
-                    print("EasyOCR loading...")
-                    _ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-                    print("EasyOCR ready!")
-                except Exception as e:
-                    print(f"EasyOCR load error: {e}")
-                    _ocr_reader = None
-    return _ocr_reader
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 def extract_ref_from_screenshot(file_id):
-    """Screenshot ከ REF ያወጣል"""
+    """Screenshot ከ REF ያወጣል using Groq Vision"""
     try:
+        # ፎቶ ከ Telegram ያወርዳል
         file_info = bot.get_file(file_id)
         file_url  = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         response  = requests.get(file_url, timeout=15)
-        img       = Image.open(io.BytesIO(response.content))
-        img = img.convert('L')
-        w, h = img.size
-        if w < 800:
-            img = img.resize((w * 2, h * 2), Image.LANCZOS)
-        reader = get_ocr_reader()
-        if not reader:
+
+        # Base64 encode
+        import base64
+        image_data = base64.b64encode(response.content).decode("utf-8")
+
+        # Groq Vision API
+        groq_response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_data}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": "Extract the transaction reference number from this payment screenshot. Look for: FT followed by letters/numbers (CBE), or DE followed by letters/numbers (Telebirr), or transaction ID/number. Reply with ONLY the reference number, nothing else. If not found, reply: NONE"
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 50
+            },
+            timeout=30
+        )
+
+        result = groq_response.json()
+        print(f"Groq result: {str(result)[:200]}")
+
+        ref_text = result["choices"][0]["message"]["content"].strip()
+        print(f"Groq REF: {ref_text}")
+
+        if ref_text == "NONE" or not ref_text:
             return None
-        import numpy as np
-        img_array = np.array(img)
-        results   = reader.readtext(img_array, detail=0)
-        full_text = " ".join(results)
-        print(f"OCR text: {full_text[:300]}")
-        return extract_ref_from_text(full_text)
+
+        # REF pattern ያረጋግጣል
+        ref = extract_ref_from_text(ref_text)
+        if not ref:
+            # Groq ቀጥታ REF ከሰጠ
+            clean = ref_text.upper().strip()
+            if re.match(r'^[A-Z0-9]{8,20}$', clean):
+                return clean
+
+        return ref
+
     except Exception as e:
-        print(f"OCR error: {e}")
+        print(f"Groq OCR error: {e}")
         return None
 
 # ══════════════════════════════════════════════════════
@@ -394,6 +420,31 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         bot.send_message(ADMIN_ID, f"❌ Approve error: {e}\nREF: {ref}")
 
 # ══════════════════════════════════════════════════════
+#  SMS TELEGRAM HANDLER — SMS Forwarder → Telegram → Bot
+# ══════════════════════════════════════════════════════
+def is_bank_sms(text):
+    t = text.lower()
+    return ("credited with etb" in t or
+            "you have received etb" in t or
+            "received etb" in t or
+            "transferred etb" in t or
+            "transaction number is" in t or
+            "has been credited" in t or
+            "branchreceipt" in t)
+
+@bot.message_handler(func=lambda m: m.text and is_bank_sms(m.text))
+def handle_bank_sms(m):
+    # Admin ከልካለ ብቻ ይሰራል
+    if m.chat.id != ADMIN_ID:
+        return
+    print(f"Bank SMS received via Telegram: {m.text[:100]}")
+    threading.Thread(
+        target=handle_sms_from_webhook,
+        args=(m.text,),
+        daemon=True
+    ).start()
+
+# ══════════════════════════════════════════════════════
 #  SCREENSHOT HANDLER
 # ══════════════════════════════════════════════════════
 def process_screenshot(m):
@@ -476,11 +527,18 @@ def process_screenshot(m):
             f"⏳ SMS verification እየጠበቀ ነው...")
 
         try:
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton("✅ Approve", callback_data=f"ap_{pid}_{uid}_{amount}"),
+                InlineKeyboardButton("❌ Reject",  callback_data=f"re_{pid}_{uid}")
+            )
             bot.send_photo(ADMIN_ID, file_id,
-                caption=f"📸 New Screenshot\n"
+                caption=f"📸 <b>New Screenshot</b>\n\n"
                         f"👤 {m.from_user.username or m.from_user.first_name} (<code>{uid}</code>)\n"
                         f"💰 {amount} ብር\n"
-                        f"📋 REF: <code>{ref}</code>")
+                        f"📋 REF: <code>{ref}</code>\n\n"
+                        f"⏳ SMS እየጠበቀ ነው...",
+                reply_markup=kb)
         except Exception:
             pass
 
@@ -841,6 +899,63 @@ def handle_callback(c):
         try:
             bot.send_message(int(u_id), "❌ <b>Deposit Rejected</b>")
         except Exception: pass
+
+# ══════════════════════════════════════════════════════
+#  TIMEOUT CHECKER — 5 ደቂቃ SMS ካልደረሰ → Cancel
+# ══════════════════════════════════════════════════════
+MATCH_TIMEOUT = 5 * 60  # 5 ደቂቃ
+
+def timeout_checker():
+    while True:
+        try:
+            now_ts   = datetime.now().timestamp()
+            payments = fb_get("payments") or {}
+
+            for pid, pay in list(payments.items()):
+                if pay.get("status") != "pending":
+                    continue
+
+                created = pay.get("time", 0) / 1000
+                if now_ts - created < MATCH_TIMEOUT:
+                    continue
+
+                # 5 ደቂቃ አለፈ → Cancel
+                uid     = str(pay.get("user_id"))
+                amount  = pay.get("amount", 0)
+                ref     = pay.get("ref", "")
+                display = pay.get("display") or uid
+
+                fb_set(f"payments/{pid}/status", "cancelled")
+                fb_delete(f"temp/{uid}")
+
+                # sms_pool ካለ አጽዳ
+                if ref:
+                    fb_delete(f"bot/sms_pool/{ref.upper()}")
+
+                # User notify
+                try:
+                    bot.send_message(int(uid),
+                        f"⏰ <b>Deposit Cancelled!</b>\n\n"
+                        f"💰 {amount} ብር\n"
+                        f"📋 REF: <code>{ref}</code>\n\n"
+                        f"⚠️ SMS 5 ደቂቃ ውስጥ አልደረሰም\n\n"
+                        f"እንደገና deposit ሞክር 👇")
+                    send_menu(int(uid))
+                except Exception: pass
+
+                # Admin notify
+                bot.send_message(ADMIN_ID,
+                    f"⏰ <b>Timeout — Auto Cancelled</b>\n\n"
+                    f"👤 {display} (<code>{uid}</code>)\n"
+                    f"💰 {amount} ብር\n"
+                    f"📋 REF: <code>{ref}</code>")
+
+        except Exception as e:
+            print(f"Timeout checker error: {e}")
+
+        time.sleep(30)
+
+threading.Thread(target=timeout_checker, daemon=True).start()
 
 # ══════════════════════════════════════════════════════
 #  DAILY REPORT
