@@ -731,13 +731,53 @@ def handle_text(m):
         except ValueError:
             bot.send_message(m.chat.id, "❌ ቁጥር ብቻ ላክ! ለምሳሌ: <code>500</code>")
         return
-
+        
     # Withdrawal account number
     if state == "waiting_wd_acct_num":
-        account = text
-        amount  = fb_get(f"temp_wd/{uid}/amount") or 0
+        account = text.strip()
         method  = fb_get(f"temp_wd/{uid}/method") or "—"
+
+        # ── Account number validation ──
+        if method == "CBE":
+            if not (account.isdigit() and len(account) == 13):
+                bot.send_message(m.chat.id,
+                    "❌ CBE account number <b>13 digit</b> ያስገቡ!\n\n"
+                    "🔢 ደሞ ሞክር")
+                return
+        elif method == "Telebirr":
+            if not (account.isdigit() and len(account) == 10):
+                bot.send_message(m.chat.id,
+                    "❌ Telebirr ስልክ ቁጥር <b>10 digit</b> ያስገቡ!\n\n"
+                    "🔢 ደሞ ሞክር")
+                return
+        elif method == "Awash":
+            if not (account.isdigit() and len(account) == 14):
+                bot.send_message(m.chat.id,
+                    "❌ Awash account number <b>14 digit</b> ያስገቡ!\n\n"
+                    "🔢 ደሞ ሞክር")
+                return
+
+        amount  = fb_get(f"temp_wd/{uid}/amount") or 0
         balance = fb_get(f"users/{uid}/balance") or 0
+
+        # ── Pending withdrawal ሳለ አይፈቀድ ──
+        pending = fb_get(f"users/{uid}/pending_withdrawal") or 0
+        if pending > 0:
+            bot.send_message(m.chat.id,
+                f"⚠️ አስቀድሞ Pending Withdrawal አለዎት!\n"
+                f"💰 {pending} ብር እየተጠበቀ ነው።")
+            fb_set(f"bot/state/{uid}", None)
+            fb_set(f"temp_wd/{uid}", None)
+            return
+
+        # ── Balance check ──
+        if amount > balance:
+            bot.send_message(m.chat.id,
+                f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
+            fb_set(f"bot/state/{uid}", None)
+            fb_set(f"temp_wd/{uid}", None)
+            return
+
         fb_set(f"users/{uid}/balance",            balance - amount)
         fb_set(f"users/{uid}/pending_withdrawal", amount)
         result = fb_push("bot/withdrawals", {
@@ -753,10 +793,10 @@ def handle_text(m):
         fb_set(f"bot/state/{uid}", None)
         fb_set(f"temp_wd/{uid}", None)
         bot.send_message(m.chat.id,
-            f"✅ <b>Withdrawal Request ተልኳል!</b>\n\n"
+            f"✅ <b>እየተላከ ነው!</b>\n\n"
             f"💰 {amount} ብር\n"
             f"📲 {method} — <code>{account}</code>\n\n"
-            f"⏳ Admin ያስተናግዳቸዋል")
+            f"⏳ እስከ 5 ደቂቃ ሊቆይ ይችላል፣ ትንሽ ይጠብቁ...")
         name = m.from_user.username or m.from_user.first_name
         bot.send_message(ADMIN_ID,
             f"🏧 <b>New Withdrawal</b>\n"
