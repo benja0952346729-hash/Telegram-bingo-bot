@@ -506,20 +506,14 @@ def process_screenshot(m):
                 bot.send_message(m.chat.id,
                     "📸 Screenshot ተቀብሏል!\n\n⏳ Admin እያረጋገጠ ነው...")
                 try:
-                    kb = InlineKeyboardMarkup()
-                    kb.add(
-                        InlineKeyboardButton("✅ Approve", callback_data=f"ap_{pid}_{uid}_{amount}"),
-                        InlineKeyboardButton("❌ Reject",  callback_data=f"re_{pid}_{uid}")
-                    )
                     bot.send_photo(ADMIN_ID, file_id,
                         caption=f"📸 <b>New Screenshot (REF አልተነበበም)</b>\n\n"
                                 f"👤 {m.from_user.username or m.from_user.first_name} (<code>{uid}</code>)\n"
                                 f"💰 {amount} ብር\n\n"
-                                f"⚠️ Manual review ያስፈልጋል",
-                        reply_markup=kb)
+                                f"⚠️ Admin Panel ላይ ያረጋግጡ",
+                        reply_markup=None)
                 except Exception:
                     pass
-        return
 
     # ── ③ Duplicate REF check ─────────────────────────
     for ref in refs:
