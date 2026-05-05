@@ -44,7 +44,6 @@ DAILY_REPORT_MINUTE = 0
 #  BONUS CONFIG
 # ══════════════════════════════════════════════════════
 WELCOME_BONUS        = 20       # አዲስ user የሚያገኘው ብር
-DEPOSIT_BONUS_PCT    = 10       # deposit bonus % (10%)
 REFERRAL_SMALL_COUNT = 20       # 20 ሰው ሲያስገባ
 REFERRAL_SMALL_AMT   = 100      # 100 ብር ሽልማት
 REFERRAL_BIG_COUNT   = 100      # 100 ሰው ሲያስገባ
@@ -478,40 +477,7 @@ def give_welcome_bonus(uid, display):
         print(f"give_welcome_bonus error: {e}")
 
 
-# ══════════════════════════════════════════════════════
-#  ④ DEPOSIT BONUS — 10% extra
-#  (do_approve ውስጥ ይጠራል)
-# ══════════════════════════════════════════════════════
-def give_deposit_bonus(uid, deposit_amount):
-    """Deposit ሲያደርግ 10% bonus ይስጥ"""
-    try:
-        bonus = int(deposit_amount * DEPOSIT_BONUS_PCT / 100)
-        if bonus <= 0:
-            return
-
-        bal     = fb_get(f"users/{uid}/balance") or 0
-        new_bal = bal + bonus
-        fb_set(f"users/{uid}/balance", new_bal)
-
-        # bonus log
-        fb_push(f"users/{uid}/bonus_history", {
-            "type":    "deposit_bonus",
-            "deposit": deposit_amount,
-            "bonus":   bonus,
-            "time":    datetime.now().isoformat()
-        })
-
-        bot.send_message(int(uid),
-            f"🎁 <b>Deposit Bonus!</b>\n\n"
-            f"💳 Deposit: {deposit_amount} ብር\n"
-            f"🎉 <b>+{bonus} ብር Bonus</b> ({DEPOSIT_BONUS_PCT}%) ታከለ!\n"
-            f"💼 Balance: <b>{new_bal} ብር</b>")
-
-        print(f"Deposit bonus {bonus} ETB given to {uid}")
-    except Exception as e:
-        print(f"give_deposit_bonus error: {e}")
-
-
+# ═════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════
 #  APPROVE (deposit bonus ጨምሮ)
 # ══════════════════════════════════════════════════════
@@ -559,8 +525,6 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
                 reply_markup=kb)
         except Exception as e:
             print(f"User notify error: {e}")
-        # ── Deposit Bonus ────────────────────────────────
-        threading.Thread(target=give_deposit_bonus, args=(uid, amount), daemon=True).start()
 
         pay     = fb_get(f"payments/{pid}") or {}
         display = pay.get("display") or uid
@@ -758,9 +722,14 @@ def send_menu(chat_id):
     )
     bot.send_message(chat_id,
         "🎮 <b>Bingo Pro</b>\n\n"
-        "💳 Deposit ለማድረግ → <b>Deposit</b> ምረጥ\n"
-        "💰 Balance ለማየት → <b>Balance</b> ምረጥ\n"
-        "👥 ጓደኛ ለማስገባት → <b>Referral</b> ምረጥ",
+        "🎁 <b>አሁን ያሉ Bonuses፡</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "👋 Welcome Bonus  → <b>+20 ብር</b>\n"
+        "⏱ Hourly Bonus   → <b>+20 ብር</b> (1ሰዓት 400ብር ሲጫወቱ)\n"
+        "👥 Referral       → <b>100 እስከ 5000 ብር</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "🏆 Prize Pool — <b>80% ለአሸናፊ!</b>\n\n"
+        "👇 ምረጥ፡",
         reply_markup=kb)
 
 
@@ -776,11 +745,11 @@ def cmd_start(m):
     if len(args) > 1 and args[1].startswith("deposit_"):
         try:
             amount = int(args[1].split("_")[1])
-            bonus = int(amount * DEPOSIT_BONUS_PCT / 100)
+            
             fb_set(f"temp/{uid}", {"amount": amount})
             bot.send_message(m.chat.id,
                 f"✅ <b>{amount} ብር Deposit</b>\n"
-                f"🎁 Bonus: <b>+{bonus} ብር</b> ({DEPOSIT_BONUS_PCT}%)\n\n"
+                
                 f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
                 f"📱 Telebirr: <code>{TELEBIRR_ACCOUNT}</code>\n\n"
                 f"💸 ከፍለህ → 📸 Screenshot ላክ")
@@ -938,26 +907,28 @@ def _show_referral(chat_id, uid):
 
         text = (
             f"👥 <b>Referral Program</b>\n\n"
-            f"🔗 Link:\n<code>{ref_link}</code>\n\n"
+            f"🔗 <b>የኔ Link፡</b>\n<code>{ref_link}</code>\n\n"
+            f"━━━━━━━━━━━━━━\n"
             f"📊 ያስገባሃቸው ሰዎች: <b>{ref_count}</b>\n"
             f"💰 ያገኘሃቸው Bonus: <b>{total_bonus_earned} ብር</b>\n\n"
             f"━━━━━━━━━━━━━━\n"
-            f"🎯 <b>Milestones:</b>\n"
-            f"  🥈 {REFERRAL_SMALL_COUNT} ሰው → 💰 {REFERRAL_SMALL_AMT} ብር\n"
-            f"  🥇 {REFERRAL_BIG_COUNT} ሰው → 💰 {REFERRAL_BIG_AMT} ብር\n\n"
-            f"{bar}\n"
+            f"🏆 <b>ሽልማቶች፡</b>\n\n"
+            f"🥈 <b>{REFERRAL_SMALL_COUNT} ሰው</b> ሲያስገባ → 💰 <b>{REFERRAL_SMALL_AMT} ብር</b>\n"
+            f"🥇 <b>{REFERRAL_BIG_COUNT} ሰው</b> ሲያስገባ → 💰 <b>{REFERRAL_BIG_AMT} ብር</b>\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"📈 <b>Progress፡</b>\n"
+            f"{bar}\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"💡 <b>እንዴት ይሰራል?</b>\n"
+            f"1️⃣ Link ን copy አድርግ\n"
+            f"2️⃣ ጓደኞችህ ጋር share አድርግ\n"
+            f"3️⃣ ሲመዘገቡ ቀጥታ ትቆጠርላቸዋል\n"
+            f"4️⃣ Milestone ሲደርስ ብር ወደ balance ይገባል!\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"📢 <i>አሁን share አድርግ — ብር አትርፍ!</i>"
         )
 
-        if needed > 0:
-            text += f"⭐ ሌላ <b>{needed} ሰው</b> ሲያስገባ → 💰 <b>{next_amt} ብር</b> ታገኛለህ!\n"
-        else:
-            text += f"🏆 ሁሉንም Milestone አሸንፈሃል!\n"
-
-        text += (
-            f"\n━━━━━━━━━━━━━━\n"
-            f"📢 Link ን ጓደኛህ ጋር Share አድርግ!"
-        )
-
+        
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("🔗 Link ተቀዳ", switch_inline_query=ref_link))
         bot.send_message(chat_id, text, reply_markup=kb)
@@ -1095,17 +1066,16 @@ def handle_callback(c):
         for a in [50, 100, 200, 500, 1000]:
             kb.add(InlineKeyboardButton(f"💳 {a} ብር", callback_data=f"pay_{a}"))
         bot.send_message(c.message.chat.id,
-            f"💳 <b>Amount ምረጥ:</b>\n\n"
-            f"🎁 <i>ሁሉም deposit ላይ {DEPOSIT_BONUS_PCT}% Bonus!</i>",
+            f"💳 <b>Amount ምረጥ:</b>",
             reply_markup=kb)
 
     elif data.startswith("pay_"):
         amount = int(data.split("_")[1])
-        bonus  = int(amount * DEPOSIT_BONUS_PCT / 100)
+        
         fb_set(f"temp/{uid}", {"amount": amount})
         bot.send_message(c.message.chat.id,
             f"✅ <b>{amount} ብር</b>\n"
-            f"🎁 Bonus: <b>+{bonus} ብር</b> ({DEPOSIT_BONUS_PCT}%) ይታከላል!\n\n"
+            
             f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
             f"📱 Telebirr: <code>{TELEBIRR_ACCOUNT}</code>\n\n"
             f"💸 ከፍለህ → 📸 Screenshot ላክ")
@@ -1164,8 +1134,7 @@ def handle_callback(c):
                 message_id=c.message.message_id,
                 caption=c.message.caption + "\n\n✅ <b>MANUALLY APPROVED</b>")
         except Exception: pass
-        # deposit bonus ይስጥ
-        threading.Thread(target=give_deposit_bonus, args=(u_id, amount), daemon=True).start()
+
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🎮 Play Game",
@@ -1303,7 +1272,7 @@ def daily_reminder_loop():
                         msg = (
                             f"🎮 <b>Bingo Pro ይናፍቅሃል!</b>\n\n"
                             f"🎯 አሁን Deposit አድርግ እና ተጫወት!\n\n"
-                            f"🎁 ሁሉም deposit ላይ <b>{DEPOSIT_BONUS_PCT}% Bonus</b> ታገኛለህ!\n\n"
+                            
                             f"▶️ ጠቅ አድርግ 👇"
                         )
 
