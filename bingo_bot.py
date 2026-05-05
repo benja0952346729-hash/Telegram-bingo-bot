@@ -761,6 +761,33 @@ def cmd_start(m):
     # ── Referral link parse (/start ref123456789) ──
     args = m.text.split()
     referrer_uid = None
+    # ── Deposit from WebApp ──
+    if len(args) > 1 and args[1].startswith("deposit_"):
+        try:
+            amount = int(args[1].split("_")[1])
+            bonus = int(amount * DEPOSIT_BONUS_PCT / 100)
+            fb_set(f"temp/{uid}", {"amount": amount})
+            bot.send_message(m.chat.id,
+                f"✅ <b>{amount} ብር Deposit</b>\n"
+                f"🎁 Bonus: <b>+{bonus} ብር</b> ({DEPOSIT_BONUS_PCT}%)\n\n"
+                f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
+                f"📱 Telebirr: <code>{TELEBIRR_ACCOUNT}</code>\n\n"
+                f"💸 ከፍለህ → 📸 Screenshot ላክ")
+        except:
+            pass
+        return
+
+    # ── Withdraw from WebApp ──
+    if len(args) > 1 and args[1].startswith("withdraw"):
+        bal = fb_get(f"users/{uid}/balance") or 0
+        if bal < MIN_WITHDRAWAL:
+            bot.send_message(m.chat.id,
+                f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
+            return
+        fb_set(f"bot/state/{uid}", "waiting_wd_amount")
+        bot.send_message(m.chat.id,
+            f"🏧 <b>Withdrawal</b>\n💰 Balance: <b>{bal} ብር</b>\n\nምን ያህል ብር? ቁጥር ላክ:")
+        return
     if len(args) > 1 and args[1].startswith("ref"):
         referrer_uid = args[1][3:]  # "ref" ን ቆርጦ UID ይወጣ
 
