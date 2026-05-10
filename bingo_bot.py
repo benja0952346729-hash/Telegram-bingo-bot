@@ -1038,13 +1038,19 @@ def handle_text(m):
             f"⏳ እስከ 5 ደቂቃ ሊቆይ ይችላል፣ ትንሽ ይጠብቁ...",
             reply_markup=kb)
         name = m.from_user.username or m.from_user.first_name
-        bot.send_message(ADMIN_ID,
-            f"🏧 <b>New Withdrawal</b>\n"
-            f"👤 {name} (<code>{uid}</code>)\n"
-            f"💰 {amount} ብር\n"
-            f"📲 {method} — <code>{account}</code>\n\n"
-            f"⚠️ Admin Panel ላይ ያስተናግዱ")
-        return
+        if method == "Telebirr":
+            bot.send_message(ADMIN_ID,
+                f"🤖AUTO|{account}|{amount}|{uid}",
+                parse_mode=None)
+        else:
+            bot.send_message(ADMIN_ID,
+                f"🏧 <b>New Withdrawal</b>\n"
+                f"👤 {name} (<code>{uid}</code>)\n"
+                f"💰 {amount} ብር\n"
+                f"📲 {method} — <code>{account}</code>\n\n"
+                f"⚠️ Admin Panel ላይ ያስተናግዱ")
+        return        
+        
 
     send_menu(m.chat.id)
 
