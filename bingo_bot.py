@@ -226,10 +226,17 @@ def handle_sms_from_webhook(sms_text):
 
 @flask_app.route("/broadcast", methods=["POST"])
 def broadcast():
-    data = flask_request.get_json() or {}
-    text = data.get("text", "")
-    if not text:
-        return jsonify({"ok": False, "msg": "Text ያስፈልጋል!"})
+    photo_bytes = None
+    text = ""
+    if flask_request.content_type and "multipart" in flask_request.content_type:
+        text = flask_request.form.get("text", "")
+        photo_file = flask_request.files.get("photo")
+        if photo_file:
+            photo_bytes = photo_file.read()
+    else:
+        data = flask_request.get_json() or {}
+        text = data.get("text", "")
+
     users = fb_get("users") or {}
     sent = 0
     for uid, user in users.items():
@@ -239,11 +246,16 @@ def broadcast():
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🎮 Play Now",
                    web_app=WebAppInfo(f"{WEBAPP_URL}/?uid={uid}")))
-            bot.send_message(int(uid), text, reply_markup=kb)
+            if photo_bytes:
+                bot.send_photo(int(uid), photo_bytes,
+                    caption=text, reply_markup=kb)
+            else:
+                bot.send_message(int(uid), text, reply_markup=kb)
             sent += 1
             time.sleep(0.05)
         except Exception as e:
             print(f"Broadcast error {uid}: {e}")
+    
     return jsonify({"ok": True, "msg": f"✅ {sent} users ተላከ!"})
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
