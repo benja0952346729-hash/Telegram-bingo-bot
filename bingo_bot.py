@@ -44,12 +44,12 @@ DAILY_REPORT_MINUTE = 0
 # ══════════════════════════════════════════════════════
 #  BONUS CONFIG
 # ══════════════════════════════════════════════════════
-WELCOME_BONUS        = 20       # አዲስ user የሚያገኘው ብር
-REFERRAL_SMALL_COUNT = 20       # 20 ሰው ሲያስገባ
-REFERRAL_SMALL_AMT   = 100      # 100 ብር ሽልማት
-REFERRAL_BIG_COUNT   = 100      # 100 ሰው ሲያስገባ
-REFERRAL_BIG_AMT     = 5000     # 5000 ብር ሽልማት
-REMINDER_HOURS       = 24       # ካልተጫወተ ስንት ሰዓት ሲሆን reminder ይላካል
+WELCOME_BONUS        = 20
+REFERRAL_SMALL_COUNT = 20
+REFERRAL_SMALL_AMT   = 100
+REFERRAL_BIG_COUNT   = 100
+REFERRAL_BIG_AMT     = 5000
+REMINDER_HOURS       = 24
 
 # ══════════════════════════════════════════════════════
 #  FIREBASE
@@ -86,6 +86,7 @@ def fb_push(path, value):
     except Exception as e:
         print(f"Firebase push error [{path}]: {e}")
         return None
+
 def get_cbe_account():
     return fb_get("bot/settings/cbe_account") or CBE_ACCOUNT
 
@@ -169,6 +170,8 @@ def handle_sms_from_webhook(sms_text):
         matched_ref = None
 
         for pid, pay in payments.items():
+            if not isinstance(pay, dict):
+                continue
             if pay.get("status") != "pending":
                 continue
             pay_ref = (pay.get("ref") or "").upper()
@@ -224,6 +227,10 @@ def handle_sms_from_webhook(sms_text):
         print(f"handle_sms_from_webhook error: {e}")
         bot.send_message(ADMIN_ID, f"❌ SMS processing error: {e}")
 
+
+# ══════════════════════════════════════════════════════
+#  BROADCAST — ✅ FIXED
+# ══════════════════════════════════════════════════════
 @flask_app.route("/broadcast", methods=["POST"])
 def broadcast():
     photo_bytes = None
@@ -240,8 +247,13 @@ def broadcast():
     users = fb_get("users") or {}
     sent = 0
     for uid, user in users.items():
-        if user.get("is_bot"): continue
-        if not uid.isdigit(): continue
+        # ✅ FIX: user dict ካልሆነ skip
+        if not isinstance(user, dict):
+            continue
+        if user.get("is_bot"):
+            continue
+        if not uid.isdigit():
+            continue
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🎮 Play Now",
@@ -255,8 +267,10 @@ def broadcast():
             time.sleep(0.05)
         except Exception as e:
             print(f"Broadcast error {uid}: {e}")
-    
+
     return jsonify({"ok": True, "msg": f"✅ {sent} users ተላከ!"})
+
+
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
@@ -391,54 +405,45 @@ def save_ref(ref, uid, amount):
 def has_pending(uid):
     payments = fb_get("payments") or {}
     for p in payments.values():
+        if not isinstance(p, dict):
+            continue
         if str(p.get("user_id")) == uid and p.get("status") == "pending":
             return True
     return False
 
 # ══════════════════════════════════════════════════════
-#  ① REFERRAL SYSTEM
-#  — /start?ref=UID ሲመጣ referrer ይመዘገባል
-#  — 20 ሰው = 100ብር | 100 ሰው = 5000ብር
+#  REFERRAL SYSTEM
 # ══════════════════════════════════════════════════════
 def handle_referral_registration(new_uid, referrer_uid):
-    """አዲስ user register ሲያደርግ referrer ይቁጠር"""
     try:
         if str(new_uid) == str(referrer_uid):
-            return  # ራሱን ሊያስገባ አይችልም
+            return
 
-        # referrer ትክክለኛ user ነው?
         ref_exists = fb_get(f"users/{referrer_uid}/balance")
         if ref_exists is None:
             return
 
-        # ቀድሞ registered ከሆነ skip
         already = fb_get(f"users/{new_uid}/referred_by")
         if already:
             return
 
-        # referral ይመዝግብ
         fb_set(f"users/{new_uid}/referred_by", str(referrer_uid))
         fb_push(f"referrals/{referrer_uid}/list", {
             "uid":  str(new_uid),
             "time": datetime.now().isoformat()
         })
 
-        # count update
         old_count = fb_get(f"referrals/{referrer_uid}/count") or 0
         new_count = old_count + 1
         fb_set(f"referrals/{referrer_uid}/count", new_count)
 
         print(f"Referral: {new_uid} referred by {referrer_uid} — total: {new_count}")
 
-        # ── ሽልማት check ──────────────────────────────────
-        # 20 ሰው milestone
         if new_count == REFERRAL_SMALL_COUNT:
             _give_referral_bonus(referrer_uid, REFERRAL_SMALL_AMT, new_count)
-        # 100 ሰው milestone
         elif new_count == REFERRAL_BIG_COUNT:
             _give_referral_bonus(referrer_uid, REFERRAL_BIG_AMT, new_count)
 
-        # referrer ን አሳውቅ
         try:
             bot.send_message(int(referrer_uid),
                 f"🎉 <b>አዲስ ሰው አስገባህ!</b>\n\n"
@@ -457,7 +462,6 @@ def handle_referral_registration(new_uid, referrer_uid):
 
 
 def _give_referral_bonus(referrer_uid, bonus_amount, count):
-    """Referral milestone ሽልማት ይስጥ"""
     try:
         bal     = fb_get(f"users/{referrer_uid}/balance") or 0
         new_bal = bal + bonus_amount
@@ -482,17 +486,14 @@ def _give_referral_bonus(referrer_uid, bonus_amount, count):
 
 
 def get_referral_link(uid):
-    """User የ referral link ይሰጣል"""
     bot_info = bot.get_me()
     return f"https://t.me/{bot_info.username}?start=ref{uid}"
 
 
 # ══════════════════════════════════════════════════════
-#  ② WELCOME BONUS
-#  — አዲስ user 20 ብር ያገኛል (አንድ ጊዜ ብቻ)
+#  WELCOME BONUS
 # ══════════════════════════════════════════════════════
 def give_welcome_bonus(uid, display):
-    """አዲስ user welcome bonus ይስጥ"""
     try:
         already = fb_get(f"users/{uid}/welcome_bonus_given")
         if already:
@@ -515,9 +516,8 @@ def give_welcome_bonus(uid, display):
         print(f"give_welcome_bonus error: {e}")
 
 
-# ═════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════
-#  APPROVE (deposit bonus ጨምሮ)
+#  APPROVE
 # ══════════════════════════════════════════════════════
 def do_approve(pid, uid, amount, ref, sms_text=""):
     try:
@@ -536,7 +536,6 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
         fb_set(f"payments/{pid}/ref",      ref)
         fb_set(f"temp/{uid}",              None)
 
-        # last_played update (reminder timer reset)
         fb_set(f"users/{uid}/last_activity", datetime.now().timestamp())
 
         save_ref(ref, uid, amount)
@@ -776,18 +775,15 @@ def cmd_start(m):
     uid     = str(m.chat.id)
     display = m.from_user.username or m.from_user.first_name or uid
 
-    # ── Referral link parse (/start ref123456789) ──
     args = m.text.split()
     referrer_uid = None
-    # ── Deposit from WebApp ──
+
     if len(args) > 1 and args[1].startswith("deposit_"):
         try:
             amount = int(args[1].split("_")[1])
-            
             fb_set(f"temp/{uid}", {"amount": amount})
             bot.send_message(m.chat.id,
                 f"✅ <b>{amount} ብር Deposit</b>\n"
-                
                 f"🏦 CBE: <code>{get_cbe_account()}</code>\n"
                 f"📱 Telebirr: <code>{get_telebirr_account()}</code>\n\n"
                 f"💸 ከፍለህ → 📸 Screenshot ላክ")
@@ -795,7 +791,6 @@ def cmd_start(m):
             pass
         return
 
-    # ── Withdraw from WebApp ──
     if len(args) > 1 and args[1].startswith("withdraw"):
         bal = fb_get(f"users/{uid}/balance") or 0
         if bal < MIN_WITHDRAWAL:
@@ -806,8 +801,9 @@ def cmd_start(m):
         bot.send_message(m.chat.id,
             f"🏧 <b>Withdrawal</b>\n💰 Balance: <b>{bal} ብር</b>\n\nምን ያህል ብር? ቁጥር ላክ:")
         return
+
     if len(args) > 1 and args[1].startswith("ref"):
-        referrer_uid = args[1][3:]  # "ref" ን ቆርጦ UID ይወጣ
+        referrer_uid = args[1][3:]
 
     is_new = fb_get(f"users/{uid}/balance") is None
 
@@ -818,10 +814,8 @@ def cmd_start(m):
         fb_set(f"users/{uid}/joined_at",     datetime.now().isoformat())
         fb_set(f"users/{uid}/last_activity", datetime.now().timestamp())
 
-        # ── Welcome Bonus ──────────────────────────
         threading.Thread(target=give_welcome_bonus, args=(uid, display), daemon=True).start()
 
-        # ── Referral registration ──────────────────
         if referrer_uid:
             threading.Thread(
                 target=handle_referral_registration,
@@ -829,7 +823,6 @@ def cmd_start(m):
                 daemon=True
             ).start()
 
-        # Admin notify
         users_count = len(fb_get("users") or {})
         bot.send_message(ADMIN_ID,
             f"👤 <b>አዲስ User!</b>\n"
@@ -859,6 +852,7 @@ def cmd_balance(m):
 def cmd_referral(m):
     _show_referral(m.chat.id, str(m.from_user.id))
 
+
 @bot.message_handler(commands=["admin"])
 def cmd_admin(m):
     if m.chat.id != ADMIN_ID:
@@ -873,21 +867,23 @@ def cmd_admin(m):
         f"🏦 CBE: <code>{cbe}</code>\n"
         f"📱 Telebirr: <code>{tel}</code>",
         reply_markup=kb)
+
+
 @bot.message_handler(commands=["stats"])
 def cmd_stats(m):
     if m.chat.id != ADMIN_ID:
         return
     users    = fb_get("users") or {}
     payments = fb_get("payments") or {}
-    approved = [p for p in payments.values() if p.get("status") == "approved"]
+    approved = [p for p in payments.values() if isinstance(p, dict) and p.get("status") == "approved"]
     total_dep = sum(p.get("amount", 0) for p in approved)
-    total_bal = sum((u.get("balance") or 0) for u in users.values())
+    total_bal = sum((u.get("balance") or 0) for u in users.values() if isinstance(u, dict))
 
-    # referral stats
     total_refs = 0
     referrals  = fb_get("referrals") or {}
     for r in referrals.values():
-        total_refs += r.get("count", 0)
+        if isinstance(r, dict):
+            total_refs += r.get("count", 0)
 
     bot.send_message(m.chat.id,
         f"📊 <b>Stats</b>\n\n"
@@ -902,7 +898,7 @@ def cmd_stats(m):
 def show_pending(m):
     if m.chat.id != ADMIN_ID: return
     payments = fb_get("payments") or {}
-    pending  = [(pid, p) for pid, p in payments.items() if p.get("status") == "pending"]
+    pending  = [(pid, p) for pid, p in payments.items() if isinstance(p, dict) and p.get("status") == "pending"]
     if not pending:
         bot.send_message(m.chat.id, "✅ ምንም pending የለም"); return
     lines = [f"⏳ <b>Pending ({len(pending)}):</b>\n"]
@@ -923,6 +919,8 @@ def clear_pending(m):
     payments = fb_get("payments") or {}
     count    = 0
     for pid, pay in payments.items():
+        if not isinstance(pay, dict):
+            continue
         if str(pay.get("user_id")) == uid and pay.get("status") == "pending":
             fb_set(f"payments/{pid}/status", "cancelled")
             count += 1
@@ -938,9 +936,10 @@ def _show_referral(chat_id, uid):
         ref_link  = get_referral_link(uid)
         ref_count = fb_get(f"referrals/{uid}/count") or 0
         bonuses   = fb_get(f"referrals/{uid}/bonuses") or {}
-        total_bonus_earned = sum(b.get("amount", 0) for b in bonuses.values())
+        total_bonus_earned = sum(
+            b.get("amount", 0) for b in bonuses.values() if isinstance(b, dict)
+        )
 
-        # progress bar
         if ref_count < REFERRAL_SMALL_COUNT:
             needed   = REFERRAL_SMALL_COUNT - ref_count
             next_amt = REFERRAL_SMALL_AMT
@@ -979,7 +978,6 @@ def _show_referral(chat_id, uid):
             f"📢 <i>አሁን share አድርግ — ብር አትርፍ!</i>"
         )
 
-        
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("🔗 Link ተቀዳ", switch_inline_query=ref_link))
         bot.send_message(chat_id, text, reply_markup=kb)
@@ -1006,6 +1004,7 @@ def handle_text(m):
         print(f"Bank SMS received from {m.from_user.id}: {text[:100]}")
         threading.Thread(target=handle_sms_from_webhook, args=(text,), daemon=True).start()
         return
+
     if state == "waiting_set_cbe" and m.from_user.id == ADMIN_ID:
         account = text.strip()
         if not (account.isdigit() and len(account) == 13):
@@ -1027,6 +1026,7 @@ def handle_text(m):
         fb_set(f"bot/state/{uid}", None)
         bot.send_message(m.chat.id, f"✅ Telebirr Account ተቀይሯል!\n📱 <code>{account}</code>")
         return
+
     if state == "waiting_wd_amount":
         try:
             amount  = int(text)
@@ -1120,8 +1120,7 @@ def handle_text(m):
                 f"💰 {amount} ብር\n"
                 f"📲 {method} — <code>{account}</code>\n\n"
                 f"⚠️ Admin Panel ላይ ያስተናግዱ")
-        return        
-        
+        return
 
     send_menu(m.chat.id)
 
@@ -1135,7 +1134,6 @@ def handle_callback(c):
     uid  = str(c.from_user.id)
     data = c.data
 
-    # last_activity update (reminder timer reset)
     fb_set(f"users/{uid}/last_activity", datetime.now().timestamp())
 
     if data == "deposit":
@@ -1148,11 +1146,9 @@ def handle_callback(c):
 
     elif data.startswith("pay_"):
         amount = int(data.split("_")[1])
-        
         fb_set(f"temp/{uid}", {"amount": amount})
         bot.send_message(c.message.chat.id,
             f"✅ <b>{amount} ብር Deposit</b>\n"
-            
             f"🏦 CBE: <code>{get_cbe_account()}</code>\n"
             f"📱 Telebirr: <code>{get_telebirr_account()}</code>\n\n"
             f"💸 ከፍለህ → 📸 Screenshot ላክ")
@@ -1177,7 +1173,7 @@ def handle_callback(c):
 
     elif data == "history":
         payments  = fb_get("payments") or {}
-        user_txns = [p for p in payments.values() if str(p.get("user_id")) == uid]
+        user_txns = [p for p in payments.values() if isinstance(p, dict) and str(p.get("user_id")) == uid]
         if not user_txns:
             bot.send_message(c.message.chat.id, "📊 ምንም ታሪክ የለም"); return
         user_txns.sort(key=lambda x: x.get("time", 0), reverse=True)
@@ -1191,6 +1187,7 @@ def handle_callback(c):
 
     elif data == "referral":
         _show_referral(c.message.chat.id, uid)
+
     elif data == "set_cbe":
         fb_set(f"bot/state/{uid}", "waiting_set_cbe")
         bot.send_message(c.message.chat.id, "🏦 አዲስ CBE Account Number ላክ (13 digit):")
@@ -1198,6 +1195,7 @@ def handle_callback(c):
     elif data == "set_telebirr":
         fb_set(f"bot/state/{uid}", "waiting_set_telebirr")
         bot.send_message(c.message.chat.id, "📱 አዲስ Telebirr ስልክ ቁጥር ላክ (10 digit):")
+
     elif data.startswith("wdm_"):
         method = data.replace("wdm_", "")
         fb_set(f"temp_wd/{uid}/method", method)
@@ -1217,7 +1215,6 @@ def handle_callback(c):
                 message_id=c.message.message_id,
                 caption=c.message.caption + "\n\n✅ <b>MANUALLY APPROVED</b>")
         except Exception: pass
-
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🎮 Play Game",
@@ -1264,6 +1261,8 @@ def timeout_checker():
             now_ts   = datetime.now().timestamp()
             payments = fb_get("payments") or {}
             for pid, pay in list(payments.items()):
+                if not isinstance(pay, dict):
+                    continue
                 if pay.get("status") != "pending": continue
                 created = pay.get("time", 0) / 1000
                 if now_ts - created < MATCH_TIMEOUT: continue
@@ -1294,14 +1293,22 @@ def timeout_checker():
 threading.Thread(target=timeout_checker, daemon=True).start()
 
 
+# ══════════════════════════════════════════════════════
+#  NOTIFICATION LISTENER — ✅ FIXED
+# ══════════════════════════════════════════════════════
 def notification_listener():
     while True:
         try:
             users = fb_get("notifications") or {}
             for uid, notif in users.items():
-                if notif and not notif.get("read"):
+                # ✅ FIX: digit ካልሆነ skip
+                if not uid.isdigit():
+                    continue
+                if not isinstance(notif, dict):
+                    continue
+                if not notif.get("read"):
                     try:
-                        bot.send_message(int(uid), notif.get("message",""))
+                        bot.send_message(int(uid), notif.get("message", ""))
                         fb_set(f"notifications/{uid}/read", True)
                     except Exception as e:
                         print(f"Notify error {uid}: {e}")
@@ -1313,36 +1320,37 @@ threading.Thread(target=notification_listener, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════
-#  ③ DAILY REMINDER — 24 ሰዓት ያልተጫወተ user
+#  DAILY REMINDER
 # ══════════════════════════════════════════════════════
 def daily_reminder_loop():
-    """24 ሰዓት ያልተጫወቱ users reminder ይላካቸዋል"""
     while True:
         try:
             now_ts = datetime.now().timestamp()
             users  = fb_get("users") or {}
 
             for uid, user in users.items():
+                if not isinstance(user, dict):
+                    continue
+                if not uid.isdigit():
+                    continue
+
                 last_act = user.get("last_activity")
                 if not last_act:
                     continue
 
                 hours_inactive = (now_ts - float(last_act)) / 3600
 
-                # 24 ሰዓት ያልፈ?
                 if hours_inactive < REMINDER_HOURS:
                     continue
 
-                # reminder ቀድሞ ተልኳል? (ዛሬ)
                 last_reminder = user.get("last_reminder_sent")
                 if last_reminder:
                     hours_since_reminder = (now_ts - float(last_reminder)) / 3600
                     if hours_since_reminder < REMINDER_HOURS:
-                        continue  # ቀድሞ ተልኳል
+                        continue
 
                 bal = user.get("balance", 0) or 0
 
-                # reminder message
                 try:
                     if bal > 0:
                         msg = (
@@ -1355,7 +1363,6 @@ def daily_reminder_loop():
                         msg = (
                             f"🎮 <b>Bingo Pro ይናፍቅሃል!</b>\n\n"
                             f"🎯 አሁን Deposit አድርግ እና ተጫወት!\n\n"
-                            
                             f"▶️ ጠቅ አድርግ 👇"
                         )
 
@@ -1375,7 +1382,7 @@ def daily_reminder_loop():
         except Exception as e:
             print(f"daily_reminder_loop error: {e}")
 
-        time.sleep(3600)  # ሰዓት ሰዓት check
+        time.sleep(3600)
 
 threading.Thread(target=daily_reminder_loop, daemon=True).start()
 
@@ -1401,17 +1408,16 @@ def daily_report_loop():
             today       = datetime.now().strftime("%Y-%m-%d")
             today_ts    = datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000
             dep_today   = [p for p in payments.values()
-                           if p.get("time", 0) >= today_ts and p.get("status") == "approved"]
+                           if isinstance(p, dict) and p.get("time", 0) >= today_ts and p.get("status") == "approved"]
             wd_today    = [w for w in withdrawals.values()
-                           if w.get("status") == "approved" and today in str(w.get("time",""))]
+                           if isinstance(w, dict) and w.get("status") == "approved" and today in str(w.get("time",""))]
             total_dep   = sum(p.get("amount", 0) for p in dep_today)
             total_wd    = sum(w.get("amount", 0) for w in wd_today)
-            pend_dep    = sum(1 for p in payments.values() if p.get("status") == "pending")
-            total_bal   = sum((u.get("balance") or 0) for u in users.values())
+            pend_dep    = sum(1 for p in payments.values() if isinstance(p, dict) and p.get("status") == "pending")
+            total_bal   = sum((u.get("balance") or 0) for u in users.values() if isinstance(u, dict))
 
-            # referral stats
             referrals   = fb_get("referrals") or {}
-            total_refs  = sum(r.get("count", 0) for r in referrals.values())
+            total_refs  = sum(r.get("count", 0) for r in referrals.values() if isinstance(r, dict))
 
             bot.send_message(ADMIN_ID,
                 f"📊 <b>Daily Report — {today}</b>\n\n"
@@ -1429,12 +1435,14 @@ threading.Thread(target=daily_report_loop, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════
-#  RUN
+#  RUN — ✅ FIXED (Conflict prevention)
 # ══════════════════════════════════════════════════════
 print("Bingo Bot starting...")
+time.sleep(3)  # ✅ startup delay
 while True:
     try:
         bot.remove_webhook()
+        time.sleep(1)  # ✅ webhook ከተወገደ በኋላ ጠብቅ
         print("Bot polling started...")
         bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
     except Exception as e:
