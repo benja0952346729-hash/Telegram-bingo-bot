@@ -32,9 +32,9 @@ BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID         = 6883208728
 WEBAPP_URL       = "https://game-production-7f86.up.railway.app"
 FIREBASE_DB_URL  = "https://house-rent-app-3674a-default-rtdb.firebaseio.com/"
-CBE_ACCOUNT      = "1000641057146"
-CBE_ACCOUNT_LAST = "7146"
-TELEBIRR_ACCOUNT = "0952346729"
+CBE_ACCOUNT      = ""
+CBE_ACCOUNT_LAST = ""
+TELEBIRR_ACCOUNT = ""
 
 MIN_WITHDRAWAL   = 50
 MAX_WITHDRAWAL   = 5000
