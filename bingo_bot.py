@@ -231,7 +231,7 @@ def handle_sms_from_webhook(sms_text):
 # ══════════════════════════════════════════════════════
 #  BROADCAST — ✅ FIXED
 # ══════════════════════════════════════════════════════
-@flask_app.route("/broadcast", methods=["POST"])
+@@flask_app.route("/broadcast", methods=["POST"])
 def broadcast():
     photo_bytes = None
     text = ""
@@ -240,6 +240,17 @@ def broadcast():
         photo_file = flask_request.files.get("photo")
         if photo_file:
             photo_bytes = photo_file.read()
+
+        # ✅ photo_url ካለ download አርግ
+        if not photo_bytes:
+            photo_url = flask_request.form.get("photo_url", "")
+            if photo_url:
+                try:
+                    r = requests.get(photo_url, timeout=10)
+                    if r.status_code == 200:
+                        photo_bytes = r.content
+                except Exception as e:
+                    print(f"Photo URL download error: {e}")
     else:
         data = flask_request.get_json() or {}
         text = data.get("text", "")
