@@ -224,7 +224,27 @@ def handle_sms_from_webhook(sms_text):
         print(f"handle_sms_from_webhook error: {e}")
         bot.send_message(ADMIN_ID, f"❌ SMS processing error: {e}")
 
-
+@flask_app.route("/broadcast", methods=["POST"])
+def broadcast():
+    data = flask_request.get_json() or {}
+    text = data.get("text", "")
+    if not text:
+        return jsonify({"ok": False, "msg": "Text ያስፈልጋል!"})
+    users = fb_get("users") or {}
+    sent = 0
+    for uid, user in users.items():
+        if user.get("is_bot"): continue
+        if not uid.isdigit(): continue
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🎮 Play Now",
+                   web_app=WebAppInfo(f"{WEBAPP_URL}/?uid={uid}")))
+            bot.send_message(int(uid), text, reply_markup=kb)
+            sent += 1
+            time.sleep(0.05)
+        except Exception as e:
+            print(f"Broadcast error {uid}: {e}")
+    return jsonify({"ok": True, "msg": f"✅ {sent} users ተላከ!"})
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
