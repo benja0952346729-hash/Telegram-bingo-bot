@@ -259,7 +259,8 @@ def broadcast():
             kb.add(InlineKeyboardButton("🎮 Play Now",
                    web_app=WebAppInfo(f"{WEBAPP_URL}/?uid={uid}")))
             if photo_bytes:
-                bot.send_photo(int(uid), photo_bytes,
+                import io
+                bot.send_photo(int(uid), io.BytesIO(photo_bytes),
                     caption=text, reply_markup=kb)
             else:
                 bot.send_message(int(uid), text, reply_markup=kb)
@@ -273,7 +274,7 @@ def broadcast():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
 
 threading.Thread(target=run_flask, daemon=True).start()
 
@@ -1435,17 +1436,28 @@ threading.Thread(target=daily_report_loop, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════
-#  RUN — ✅ FIXED (Conflict prevention)
+#  RUN — ✅ Conflict-safe polling
 # ══════════════════════════════════════════════════════
 print("Bingo Bot starting...")
-time.sleep(3)  # ✅ startup delay
+time.sleep(3)  # አሮጌው container እስኪቆም ጠብቅ
+
 while True:
     try:
         bot.remove_webhook()
-        time.sleep(1)  # ✅ webhook ከተወገደ በኋላ ጠብቅ
+        time.sleep(2)
         print("Bot polling started...")
-        bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
+        bot.infinity_polling(
+            skip_pending=True,
+            timeout=60,
+            long_polling_timeout=60,
+            allowed_updates=["message", "callback_query"]
+        )
     except Exception as e:
-        print(f"Bot crashed: {e}")
-        print("Restarting in 5 seconds...")
-        time.sleep(5)
+        err = str(e)
+        print(f"Bot crashed: {err}")
+        if "Conflict" in err:
+            print("Conflict — waiting 15s for other instance to stop...")
+            time.sleep(15)
+        else:
+            print("Restarting in 5 seconds...")
+            time.sleep(5)
