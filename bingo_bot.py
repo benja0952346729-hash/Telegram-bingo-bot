@@ -35,6 +35,7 @@ FIREBASE_DB_URL  = "https://house-rent-app-3674a-default-rtdb.firebaseio.com/"
 CBE_ACCOUNT      = "1000641057146"
 CBE_ACCOUNT_LAST = "7146"
 TELEBIRR_ACCOUNT = "0952346729"
+
 MIN_WITHDRAWAL   = 50
 MAX_WITHDRAWAL   = 5000
 DAILY_REPORT_HOUR   = 20
@@ -85,6 +86,11 @@ def fb_push(path, value):
     except Exception as e:
         print(f"Firebase push error [{path}]: {e}")
         return None
+def get_cbe_account():
+    return fb_get("bot/settings/cbe_account") or CBE_ACCOUNT
+
+def get_telebirr_account():
+    return fb_get("bot/settings/telebirr_account") or TELEBIRR_ACCOUNT
 
 # ══════════════════════════════════════════════════════
 #  BOT
@@ -750,8 +756,8 @@ def cmd_start(m):
             bot.send_message(m.chat.id,
                 f"✅ <b>{amount} ብር Deposit</b>\n"
                 
-                f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
-                f"📱 Telebirr: <code>{TELEBIRR_ACCOUNT}</code>\n\n"
+                f"🏦 CBE: <code>{get_cbe_account()}</code>\n"
+                f"📱 Telebirr: <code>{get_telebirr_account()}</code>\n\n"
                 f"💸 ከፍለህ → 📸 Screenshot ላክ")
         except:
             pass
@@ -821,7 +827,20 @@ def cmd_balance(m):
 def cmd_referral(m):
     _show_referral(m.chat.id, str(m.from_user.id))
 
-
+@bot.message_handler(commands=["admin"])
+def cmd_admin(m):
+    if m.chat.id != ADMIN_ID:
+        return
+    cbe = get_cbe_account()
+    tel = get_telebirr_account()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"✏️ CBE: {cbe}", callback_data="set_cbe"))
+    kb.add(InlineKeyboardButton(f"✏️ Telebirr: {tel}", callback_data="set_telebirr"))
+    bot.send_message(m.chat.id,
+        f"⚙️ <b>Admin Panel</b>\n\n"
+        f"🏦 CBE: <code>{cbe}</code>\n"
+        f"📱 Telebirr: <code>{tel}</code>",
+        reply_markup=kb)
 @bot.message_handler(commands=["stats"])
 def cmd_stats(m):
     if m.chat.id != ADMIN_ID:
@@ -955,7 +974,27 @@ def handle_text(m):
         print(f"Bank SMS received from {m.from_user.id}: {text[:100]}")
         threading.Thread(target=handle_sms_from_webhook, args=(text,), daemon=True).start()
         return
+    if state == "waiting_set_cbe" and m.from_user.id == ADMIN_ID:
+        account = text.strip()
+        if not (account.isdigit() and len(account) == 13):
+            bot.send_message(m.chat.id, "❌ CBE account <b>13 digit</b> ያስፈልጋል!")
+            fb_set(f"bot/state/{uid}", None)
+            return
+        fb_set("bot/settings/cbe_account", account)
+        fb_set(f"bot/state/{uid}", None)
+        bot.send_message(m.chat.id, f"✅ CBE Account ተቀይሯል!\n🏦 <code>{account}</code>")
+        return
 
+    if state == "waiting_set_telebirr" and m.from_user.id == ADMIN_ID:
+        account = text.strip()
+        if not (account.isdigit() and len(account) == 10):
+            bot.send_message(m.chat.id, "❌ Telebirr <b>10 digit</b> ያስፈልጋል!")
+            fb_set(f"bot/state/{uid}", None)
+            return
+        fb_set("bot/settings/telebirr_account", account)
+        fb_set(f"bot/state/{uid}", None)
+        bot.send_message(m.chat.id, f"✅ Telebirr Account ተቀይሯል!\n📱 <code>{account}</code>")
+        return
     if state == "waiting_wd_amount":
         try:
             amount  = int(text)
@@ -1080,10 +1119,10 @@ def handle_callback(c):
         
         fb_set(f"temp/{uid}", {"amount": amount})
         bot.send_message(c.message.chat.id,
-            f"✅ <b>{amount} ብር</b>\n"
+            f"✅ <b>{amount} ብር Deposit</b>\n"
             
-            f"🏦 CBE: <code>{CBE_ACCOUNT}</code>\n"
-            f"📱 Telebirr: <code>{TELEBIRR_ACCOUNT}</code>\n\n"
+            f"🏦 CBE: <code>{get_cbe_account()}</code>\n"
+            f"📱 Telebirr: <code>{get_telebirr_account()}</code>\n\n"
             f"💸 ከፍለህ → 📸 Screenshot ላክ")
 
     elif data == "balance":
@@ -1120,7 +1159,13 @@ def handle_callback(c):
 
     elif data == "referral":
         _show_referral(c.message.chat.id, uid)
+    elif data == "set_cbe":
+        fb_set(f"bot/state/{uid}", "waiting_set_cbe")
+        bot.send_message(c.message.chat.id, "🏦 አዲስ CBE Account Number ላክ (13 digit):")
 
+    elif data == "set_telebirr":
+        fb_set(f"bot/state/{uid}", "waiting_set_telebirr")
+        bot.send_message(c.message.chat.id, "📱 አዲስ Telebirr ስልክ ቁጥር ላክ (10 digit):")
     elif data.startswith("wdm_"):
         method = data.replace("wdm_", "")
         fb_set(f"temp_wd/{uid}/method", method)
