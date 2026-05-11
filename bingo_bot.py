@@ -231,7 +231,7 @@ def handle_sms_from_webhook(sms_text):
 # ══════════════════════════════════════════════════════
 #  BROADCAST — ✅ FIXED
 # ══════════════════════════════════════════════════════
-@@flask_app.route("/broadcast", methods=["POST"])
+@flask_app.route("/broadcast", methods=["POST"])
 def broadcast():
     photo_bytes = None
     text = ""
