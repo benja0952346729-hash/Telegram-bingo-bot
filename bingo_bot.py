@@ -550,10 +550,25 @@ def is_bank_sms(text):
 # ✅ FIX: Screenshot handler — temp check ተስተካክሏል
 def process_screenshot(m):
     uid  = str(m.from_user.id)
-    temp = fb_get(f"temp/{uid}")
+    raw_temp = fb_get(f"temp/{uid}")
 
-    # ✅ FIX: temp ካልሆነ ወይም amount ከሌለ ትክክለኛ error ይስጥ
-    if not temp or not isinstance(temp, dict) or not temp.get("amount"):
+    # ✅ FIX: temp ምንም አይነት format ቢመጣ handle ያደርጋል
+    if isinstance(raw_temp, dict):
+        temp = raw_temp
+    elif isinstance(raw_temp, (int, float, str)):
+        # server number ወይም string ስቀምጥ dict አድርገው
+        try:
+            temp = {"amount": int(float(raw_temp))}
+        except:
+            temp = None
+    else:
+        temp = None
+
+    amount = 0
+    if temp and isinstance(temp, dict):
+        amount = int(float(temp.get("amount", 0) or 0))
+
+    if not amount:
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💳 Deposit አድርግ", callback_data="deposit"))
         bot.send_message(m.chat.id,
@@ -561,8 +576,6 @@ def process_screenshot(m):
             "👇 Deposit ተጫን → Amount ምረጥ → ከዚያ Screenshot ላክ",
             reply_markup=kb)
         return
-
-    amount  = temp.get("amount", 0)
     file_id = m.photo[-1].file_id if m.content_type == "photo" else m.document.file_id
 
     if is_dup_screenshot(file_id):
@@ -1013,7 +1026,7 @@ def handle_text(m):
         if amount > balance:
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
             return
-        fb_set(f"bot/state/{uid}", "waiting_wd_account")
+        fb_set(f"bot/state/{uid}", "waiting_wd_acct_num")
         fb_set(f"temp_wd/{uid}/amount", amount)
         kb = InlineKeyboardMarkup(row_width=2)
         kb.add(
