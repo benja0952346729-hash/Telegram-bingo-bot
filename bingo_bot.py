@@ -17,16 +17,11 @@ import requests
 from datetime import datetime, timedelta
 from PIL import Image
 
-
-
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 from flask import Flask, request as flask_request, jsonify
 
-# ══════════════════════════════════════════════════════
-#  CONFIG
-# ══════════════════════════════════════════════════════
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID         = 6883208728
 WEBAPP_URL       = "https://game-production-7f86.up.railway.app"
@@ -40,20 +35,12 @@ MAX_WITHDRAWAL   = 5000
 DAILY_REPORT_HOUR   = 20
 DAILY_REPORT_MINUTE = 0
 
-# ══════════════════════════════════════════════════════
-#  BONUS CONFIG
-# ══════════════════════════════════════════════════════
 WELCOME_BONUS        = 20
 REFERRAL_SMALL_COUNT = 20
 REFERRAL_SMALL_AMT   = 100
 REFERRAL_BIG_COUNT   = 100
 REFERRAL_BIG_AMT     = 5000
 REMINDER_HOURS       = 24
-
-# ══════════════════════════════════════════════════════
-#  FIREBASE
-# ══════════════════════════════════════════════════════
-
 
 SERVER = "https://admin-panel-production-b31a.up.railway.app"
 
@@ -98,23 +85,14 @@ def get_cbe_account():
 def get_telebirr_account():
     return fb_get("bot/settings/telebirr_account") or TELEBIRR_ACCOUNT
 
-# ══════════════════════════════════════════════════════
-#  BOT
-# ══════════════════════════════════════════════════════
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# ══════════════════════════════════════════════════════
-#  FLASK
-# ══════════════════════════════════════════════════════
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
     return "Bingo Bot is running"
 
-# ══════════════════════════════════════════════════════
-#  SMS WEBHOOK
-# ══════════════════════════════════════════════════════
 @flask_app.route("/sms", methods=["POST"])
 def sms_webhook():
     try:
@@ -233,9 +211,6 @@ def handle_sms_from_webhook(sms_text):
         bot.send_message(ADMIN_ID, f"❌ SMS processing error: {e}")
 
 
-# ══════════════════════════════════════════════════════
-#  BROADCAST — ✅ FIXED
-# ══════════════════════════════════════════════════════
 @flask_app.route("/broadcast", methods=["POST"])
 def broadcast():
     photo_bytes = None
@@ -245,8 +220,6 @@ def broadcast():
         photo_file = flask_request.files.get("photo")
         if photo_file:
             photo_bytes = photo_file.read()
-
-        # ✅ photo_url ካለ download አርግ
         if not photo_bytes:
             photo_url = flask_request.form.get("photo_url", "")
             if photo_url:
@@ -263,7 +236,6 @@ def broadcast():
     users = fb_get("users") or {}
     sent = 0
     for uid, user in users.items():
-        # ✅ FIX: user dict ካልሆነ skip
         if not isinstance(user, dict):
             continue
         if user.get("is_bot"):
@@ -275,7 +247,6 @@ def broadcast():
             kb.add(InlineKeyboardButton("🎮 Play Now",
                    web_app=WebAppInfo(f"{WEBAPP_URL}/?uid={uid}")))
             if photo_bytes:
-                import io
                 bot.send_photo(int(uid), io.BytesIO(photo_bytes),
                     caption=text, reply_markup=kb)
             else:
@@ -294,9 +265,6 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# ══════════════════════════════════════════════════════
-#  REF EXTRACTION
-# ══════════════════════════════════════════════════════
 def extract_refs_from_text(text):
     if not text:
         return []
@@ -350,9 +318,7 @@ def extract_amount_from_sms(text):
     if am: return float(am.group(1).replace(',', ''))
     return 0.0
 
-# ══════════════════════════════════════════════════════
-#  OCR — Groq Vision
-# ══════════════════════════════════════════════════════
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 def extract_refs_from_screenshot(file_id):
@@ -397,9 +363,7 @@ def extract_refs_from_screenshot(file_id):
         print(f"Groq OCR error: {e}")
         return []
 
-# ══════════════════════════════════════════════════════
-#  DUPLICATE CHECKS
-# ══════════════════════════════════════════════════════
+
 def hash_file(file_id):
     return hashlib.sha256(file_id.encode()).hexdigest()
 
@@ -428,39 +392,30 @@ def has_pending(uid):
             return True
     return False
 
-# ══════════════════════════════════════════════════════
-#  REFERRAL SYSTEM
-# ══════════════════════════════════════════════════════
+
 def handle_referral_registration(new_uid, referrer_uid):
     try:
         if str(new_uid) == str(referrer_uid):
             return
-
         ref_exists = fb_get(f"users/{referrer_uid}/balance")
         if ref_exists is None:
             return
-
         already = fb_get(f"users/{new_uid}/referred_by")
         if already:
             return
-
         fb_set(f"users/{new_uid}/referred_by", str(referrer_uid))
         fb_push(f"referrals/{referrer_uid}/list", {
             "uid":  str(new_uid),
             "time": datetime.now().isoformat()
         })
-
         old_count = fb_get(f"referrals/{referrer_uid}/count") or 0
         new_count = old_count + 1
         fb_set(f"referrals/{referrer_uid}/count", new_count)
-
         print(f"Referral: {new_uid} referred by {referrer_uid} — total: {new_count}")
-
         if new_count == REFERRAL_SMALL_COUNT:
             _give_referral_bonus(referrer_uid, REFERRAL_SMALL_AMT, new_count)
         elif new_count == REFERRAL_BIG_COUNT:
             _give_referral_bonus(referrer_uid, REFERRAL_BIG_AMT, new_count)
-
         try:
             bot.send_message(int(referrer_uid),
                 f"🎉 <b>አዲስ ሰው አስገባህ!</b>\n\n"
@@ -473,7 +428,6 @@ def handle_referral_registration(new_uid, referrer_uid):
             )
         except Exception as e:
             print(f"Referral notify error: {e}")
-
     except Exception as e:
         print(f"handle_referral_registration error: {e}")
 
@@ -481,8 +435,8 @@ def handle_referral_registration(new_uid, referrer_uid):
 def _give_referral_bonus(referrer_uid, bonus_amount, count):
     try:
         r = requests.post(f"{SERVER}/update-balance",
-    json={"uid": referrer_uid, "amount": bonus_amount, "type": "add"}, timeout=5)
-new_bal = r.json().get("balance", 0)
+            json={"uid": referrer_uid, "amount": bonus_amount, "type": "add"}, timeout=5)
+        new_bal = r.json().get("balance", 0)
         fb_push(f"referrals/{referrer_uid}/bonuses", {
             "amount": bonus_amount,
             "count":  count,
@@ -507,9 +461,6 @@ def get_referral_link(uid):
     return f"https://t.me/{bot_info.username}?start=ref{uid}"
 
 
-# ══════════════════════════════════════════════════════
-#  WELCOME BONUS
-# ══════════════════════════════════════════════════════
 def give_welcome_bonus(uid, display):
     try:
         bot.send_message(int(uid),
@@ -521,9 +472,6 @@ def give_welcome_bonus(uid, display):
         print(f"give_welcome_bonus error: {e}")
 
 
-# ══════════════════════════════════════════════════════
-#  APPROVE
-# ══════════════════════════════════════════════════════
 def do_approve(pid, uid, amount, ref, sms_text=""):
     try:
         amount = int(amount) if amount else 0
@@ -533,9 +481,9 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
             return
 
         r = requests.post(f"{SERVER}/update-balance",
-    json={"uid": uid, "amount": amount, "type": "add"}, timeout=5)
-new_bal = r.json().get("balance", 0)
-fb_set(f"payments/{pid}/status", "approved")
+            json={"uid": uid, "amount": amount, "type": "add"}, timeout=5)
+        new_bal = r.json().get("balance", 0)
+        fb_set(f"payments/{pid}/status", "approved")
         fb_set(f"payments/{pid}/verified", True)
         fb_set(f"payments/{pid}/ref",      ref)
         fb_set(f"temp/{uid}",              None)
@@ -579,10 +527,6 @@ fb_set(f"payments/{pid}/status", "approved")
         print(f"do_approve error: {e}")
         bot.send_message(ADMIN_ID, f"❌ Approve error: {e}\nREF: {ref}")
 
-
-# ══════════════════════════════════════════════════════
-#  IS BANK SMS
-# ══════════════════════════════════════════════════════
 def is_bank_sms(text):
     if not text: return False
     t = text.lower()
@@ -602,9 +546,6 @@ def is_bank_sms(text):
     return False
 
 
-# ══════════════════════════════════════════════════════
-#  SCREENSHOT HANDLER
-# ══════════════════════════════════════════════════════
 def process_screenshot(m):
     uid  = str(m.from_user.id)
     temp = fb_get(f"temp/{uid}")
@@ -743,9 +684,6 @@ def handle_screenshot(m):
     threading.Thread(target=process_screenshot, args=(m,), daemon=True).start()
 
 
-# ══════════════════════════════════════════════════════
-#  COMMANDS
-# ══════════════════════════════════════════════════════
 def send_menu(chat_id):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎮 Play Game",
@@ -759,7 +697,7 @@ def send_menu(chat_id):
         InlineKeyboardButton("📊 History",  callback_data="history")
     )
     kb.add(
-        InlineKeyboardButton("👥 Referral",  callback_data="referral"),
+        InlineKeyboardButton("👥 Referral", callback_data="referral"),
     )
     bot.send_message(chat_id,
         "🎮 <b>Bingo Pro</b>\n\n"
@@ -806,7 +744,7 @@ def cmd_start(m):
 
     if len(args) > 1 and args[1].startswith("ref"):
         referrer_uid = args[1][3:]
-# PostgreSQL ላይ user register + first_name save
+
     display = m.from_user.first_name or m.from_user.username or uid
     try:
         requests.get(f"{SERVER}/user-state",
@@ -814,15 +752,17 @@ def cmd_start(m):
             timeout=5)
     except:
         pass
-    r = requests.get(f"{SERVER}/get      
-        -balance", params={"uid": uid}, timeout=5)
-is_new = r.json().get("balance", 0) == 0 and fb_get(f"users/{uid}/joined_at") is None
+
+    try:
+        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+        is_new = r.json().get("balance", 0) == 0 and fb_get(f"users/{uid}/joined_at") is None
+    except:
+        is_new = False
 
     if is_new:
         fb_set(f"users/{uid}/balance",       0)
         fb_set(f"users/{uid}/display",       display)
         fb_set(f"users/{uid}/username",      display)
-        # PostgreSQL display አዘምን
         try:
             requests.get(f"{SERVER}/user-state",
                 params={"userId": uid, "firstName": display},
@@ -851,7 +791,6 @@ is_new = r.json().get("balance", 0) == 0 and fb_get(f"users/{uid}/joined_at") is
     else:
         fb_set(f"users/{uid}/display",  display)
         fb_set(f"users/{uid}/username", display)
-        # PostgreSQL display አዘምን
         try:
             requests.get(f"{SERVER}/user-state",
                 params={"userId": uid, "firstName": display},
@@ -864,7 +803,7 @@ is_new = r.json().get("balance", 0) == 0 and fb_get(f"users/{uid}/joined_at") is
 
 @bot.message_handler(commands=["balance"])
 def cmd_balance(m):
-    uid        = str(m.chat.id)
+    uid = str(m.chat.id)
     r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
     bal = r.json().get("balance", 0)
     pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
@@ -904,13 +843,11 @@ def cmd_stats(m):
     approved = [p for p in payments.values() if isinstance(p, dict) and p.get("status") == "approved"]
     total_dep = sum(p.get("amount", 0) for p in approved)
     total_bal = sum((u.get("balance") or 0) for u in users.values() if isinstance(u, dict))
-
     total_refs = 0
     referrals  = fb_get("referrals") or {}
     for r in referrals.values():
         if isinstance(r, dict):
             total_refs += r.get("count", 0)
-
     bot.send_message(m.chat.id,
         f"📊 <b>Stats</b>\n\n"
         f"👥 Users: {len(users)}\n"
@@ -954,9 +891,6 @@ def clear_pending(m):
         f"✅ User <code>{uid}</code> cleared!\n📋 {count} pending cancelled.")
 
 
-# ══════════════════════════════════════════════════════
-#  REFERRAL INFO HELPER
-# ══════════════════════════════════════════════════════
 def _show_referral(chat_id, uid):
     try:
         ref_link  = get_referral_link(uid)
@@ -965,7 +899,6 @@ def _show_referral(chat_id, uid):
         total_bonus_earned = sum(
             b.get("amount", 0) for b in bonuses.values() if isinstance(b, dict)
         )
-
         if ref_count < REFERRAL_SMALL_COUNT:
             needed   = REFERRAL_SMALL_COUNT - ref_count
             next_amt = REFERRAL_SMALL_AMT
@@ -978,9 +911,7 @@ def _show_referral(chat_id, uid):
             needed   = 0
             next_amt = 0
             progress = 10
-
         bar = "🟩" * progress + "⬜" * (10 - progress)
-
         text = (
             f"👥 <b>Referral Program</b>\n\n"
             f"🔗 <b>የኔ Link፡</b>\n<code>{ref_link}</code>\n\n"
@@ -1003,19 +934,14 @@ def _show_referral(chat_id, uid):
             f"━━━━━━━━━━━━━━\n"
             f"📢 <i>አሁን share አድርግ — ብር አትርፍ!</i>"
         )
-
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("🔗 Link ተቀዳ", switch_inline_query=ref_link))
         bot.send_message(chat_id, text, reply_markup=kb)
-
     except Exception as e:
         print(f"_show_referral error: {e}")
         bot.send_message(chat_id, "❌ Error! እንደገና ሞክር")
 
 
-# ══════════════════════════════════════════════════════
-#  TEXT HANDLER
-# ══════════════════════════════════════════════════════
 ALLOWED_SMS_SENDERS = [ADMIN_ID]
 
 @bot.message_handler(func=lambda m: True, content_types=["text"])
@@ -1057,7 +983,7 @@ def handle_text(m):
         try:
             amount  = int(text)
             r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-balance = r.json().get("balance", 0)
+            balance = r.json().get("balance", 0)
             if amount < MIN_WITHDRAWAL:
                 bot.send_message(m.chat.id, f"❌ Minimum: <b>{MIN_WITHDRAWAL} ብር</b>"); return
             if amount > MAX_WITHDRAWAL:
@@ -1095,8 +1021,8 @@ balance = r.json().get("balance", 0)
                 fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); send_menu(m.chat.id); return
 
         amount  = fb_get(f"temp_wd/{uid}/amount") or 0
-        r = requests.get(f"{SERVER}/get      -balance", params={"uid": uid}, timeout=5)
-balance = r.json().get("balance", 0)
+        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+        balance = r.json().get("balance", 0)
         pending = fb_get(f"users/{uid}/pending_withdrawal") or 0
         if pending > 0:
             bot.send_message(m.chat.id,
@@ -1105,7 +1031,6 @@ balance = r.json().get("balance", 0)
         if amount > balance:
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
             fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); return
-
         requests.post(f"{SERVER}/update-balance",
             json={"uid": uid, "amount": amount, "type": "subtract"}, timeout=5)
         fb_set(f"users/{uid}/pending_withdrawal", amount)
@@ -1154,9 +1079,6 @@ balance = r.json().get("balance", 0)
     send_menu(m.chat.id)
 
 
-# ══════════════════════════════════════════════════════
-#  CALLBACKS
-# ══════════════════════════════════════════════════════
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(c):
     bot.answer_callback_query(c.id)
@@ -1183,8 +1105,8 @@ def handle_callback(c):
             f"💸 ከፍለህ → 📸 Screenshot ላክ")
 
     elif data == "balance":
-    r = requests.get(f"{SERVER}/get          -balance", params={"uid": uid}, timeout=5)
-    bal = r.json().get("balance", 0)
+        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+        bal = r.json().get("balance", 0)
         pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
         text = f"💰 <b>Balance: {bal} ብር</b>"
         if pending_wd:
@@ -1192,9 +1114,8 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id, text)
 
     elif data == "withdraw":
-    r = requests.get(f"{SERVER}/get        
-        -balance", params={"uid": uid}, timeout=5)
-    bal = r.json().get("balance", 0)
+        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+        bal = r.json().get("balance", 0)
         if bal < MIN_WITHDRAWAL:
             bot.send_message(c.message.chat.id,
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
@@ -1235,12 +1156,12 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id, f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
 
     elif data.startswith("ap_"):
-    parts  = data.split("_")
-    pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
-    r = requests.post(f"{SERVER}/update-balance",
-        json={"uid": u_id, "amount": amount, "type": "add"}, timeout=5)
-    new_bal = r.json().get("balance", 0)
-    fb_set(f"payments/{pid}/status", "approved")
+        parts  = data.split("_")
+        pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
+        r = requests.post(f"{SERVER}/update-balance",
+            json={"uid": u_id, "amount": amount, "type": "add"}, timeout=5)
+        new_bal = r.json().get("balance", 0)
+        fb_set(f"payments/{pid}/status", "approved")
         dep_snap = fb_get("analytics/totalDeposits") or 0
         fb_set("analytics/totalDeposits", dep_snap + amount)
         try:
@@ -1283,9 +1204,6 @@ def handle_callback(c):
         except Exception: pass
 
 
-# ══════════════════════════════════════════════════════
-#  TIMEOUT CHECKER
-# ══════════════════════════════════════════════════════
 MATCH_TIMEOUT = 5 * 60
 
 def timeout_checker():
@@ -1326,9 +1244,6 @@ def timeout_checker():
 threading.Thread(target=timeout_checker, daemon=True).start()
 
 
-# ══════════════════════════════════════════════════════
-#  NOTIFICATION LISTENER — ✅ FIXED
-# ══════════════════════════════════════════════════════
 def notification_listener():
     while True:
         try:
@@ -1350,9 +1265,6 @@ def notification_listener():
 threading.Thread(target=notification_listener, daemon=True).start()
 
 
-# ══════════════════════════════════════════════════════
-#  DAILY REMINDER
-# ══════════════════════════════════════════════════════
 def daily_reminder_loop():
     while True:
         try:
@@ -1380,8 +1292,11 @@ def daily_reminder_loop():
                     if hours_since_reminder < REMINDER_HOURS:
                         continue
 
-                r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-bal = r.json().get("balance", 0)
+                try:
+                    r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+                    bal = r.json().get("balance", 0)
+                except:
+                    bal = 0
 
                 try:
                     if bal > 0:
@@ -1419,9 +1334,6 @@ bal = r.json().get("balance", 0)
 threading.Thread(target=daily_reminder_loop, daemon=True).start()
 
 
-# ══════════════════════════════════════════════════════
-#  DAILY REPORT
-# ══════════════════════════════════════════════════════
 def daily_report_loop():
     while True:
         now      = datetime.now()
@@ -1466,11 +1378,8 @@ def daily_report_loop():
 threading.Thread(target=daily_report_loop, daemon=True).start()
 
 
-# ══════════════════════════════════════════════════════
-#  RUN — ✅ Conflict-safe polling
-# ══════════════════════════════════════════════════════
 print("Bingo Bot starting...")
-time.sleep(3)  # አሮጌው container እስኪቆም ጠብቅ
+time.sleep(3)
 
 while True:
     try:
