@@ -3,6 +3,7 @@
 ║              BINGO PRO — TELEGRAM BOT (SMS WEBHOOK)             ║
 ║  Flow: SMS → REF | Screenshot → REF | Match → Auto Approve      ║
 ║  NEW:  Referral | Welcome Bonus | Daily Reminder | Deposit Bonus ║
+║  FIX:  Deposit temp fix | Withdraw state fix                     ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -466,7 +467,7 @@ def give_welcome_bonus(uid, display):
         bot.send_message(int(uid),
             f"🎁 <b>እንኳን ደህና መጣህ!</b>\n\n"
             f"ወደ Bingo Pro እንኳን ደህና መጣህ! 🎮\n\n"
-            f"🎉 <b>+20 ብር</b> Balance ላይ ታከለ!\n\n"
+            f"🎉 <b>+{WELCOME_BONUS} ብር</b> Balance ላይ ታከለ!\n\n"
             f"▶️ አሁን መጫወት ትችላለህ!")
     except Exception as e:
         print(f"give_welcome_bonus error: {e}")
@@ -546,13 +547,19 @@ def is_bank_sms(text):
     return False
 
 
+# ✅ FIX: Screenshot handler — temp check ተስተካክሏል
 def process_screenshot(m):
     uid  = str(m.from_user.id)
     temp = fb_get(f"temp/{uid}")
 
-    if not temp:
+    # ✅ FIX: temp ካልሆነ ወይም amount ከሌለ ትክክለኛ error ይስጥ
+    if not temp or not isinstance(temp, dict) or not temp.get("amount"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("💳 Deposit አድርግ", callback_data="deposit"))
         bot.send_message(m.chat.id,
-            "❗ መጀመሪያ <b>Deposit</b> ምረጥ → amount ምረጥ → ከዚያ screenshot ላክ")
+            "❗ <b>መጀመሪያ Deposit ምረጥ!</b>\n\n"
+            "👇 Deposit ተጫን → Amount ምረጥ → ከዚያ Screenshot ላክ",
+            reply_markup=kb)
         return
 
     amount  = temp.get("amount", 0)
@@ -564,7 +571,7 @@ def process_screenshot(m):
         return
 
     if has_pending(uid):
-        bot.send_message(m.chat.id, "⚠️ አስቀድሞ Pending Payment አለዎት!")
+        bot.send_message(m.chat.id, "⚠️ አስቀድሞ Pending Payment አለዎት!\n\nAdmin እየተጠባበቅ ነው...")
         return
 
     bot.send_message(m.chat.id, "🔍 Screenshot እየተነበበ ነው...")
@@ -575,7 +582,8 @@ def process_screenshot(m):
         fb_set(f"temp/{uid}/retry_count", retry_count)
         if retry_count < 3:
             bot.send_message(m.chat.id,
-                f"⚠️ Screenshot ጥራት የለውም — ድጋሚ ላክ\n\n📸 <b>ግልጽ የሆነ screenshot ላክ</b>")
+                f"⚠️ Screenshot ጥራት የለውም — ድጋሚ ላክ ({retry_count}/3)\n\n"
+                f"📸 <b>ግልጽ የሆነ screenshot ላክ</b>")
         else:
             save_screenshot_hash(file_id, uid, amount)
             result = fb_push("payments", {
@@ -721,7 +729,8 @@ def cmd_start(m):
     if len(args) > 1 and args[1].startswith("deposit_"):
         try:
             amount = int(args[1].split("_")[1])
-            fb_set(f"temp/{uid}", {"amount": amount})
+            # ✅ FIX: temp ሲቀመጥ retry_count ይጨምር
+            fb_set(f"temp/{uid}", {"amount": amount, "retry_count": 0})
             bot.send_message(m.chat.id,
                 f"✅ <b>{amount} ብር Deposit</b>\n"
                 f"🏦 CBE: <code>{get_cbe_account()}</code>\n"
@@ -944,19 +953,22 @@ def _show_referral(chat_id, uid):
 
 ALLOWED_SMS_SENDERS = [ADMIN_ID]
 
+# ✅ FIX: handle_text — state check ቅደም ተከተል ተስተካክሏል
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def handle_text(m):
     uid   = str(m.from_user.id)
     text  = m.text.strip()
     state = fb_get(f"bot/state/{uid}")
 
-    print(f"SENDER ID: {m.from_user.id} | USERNAME: {m.from_user.username} | TEXT: {text[:50]}")
+    print(f"SENDER ID: {m.from_user.id} | STATE: {state} | TEXT: {text[:50]}")
 
+    # ✅ FIX: Bank SMS check
     if m.from_user.id in ALLOWED_SMS_SENDERS and is_bank_sms(text):
         print(f"Bank SMS received from {m.from_user.id}: {text[:100]}")
         threading.Thread(target=handle_sms_from_webhook, args=(text,), daemon=True).start()
         return
 
+    # ✅ FIX: Admin state handlers — ከ send_menu በፊት
     if state == "waiting_set_cbe" and m.from_user.id == ADMIN_ID:
         account = text.strip()
         if not (account.isdigit() and len(account) == 13):
@@ -979,60 +991,93 @@ def handle_text(m):
         bot.send_message(m.chat.id, f"✅ Telebirr Account ተቀይሯል!\n📱 <code>{account}</code>")
         return
 
+    # ✅ FIX: Withdrawal amount state
     if state == "waiting_wd_amount":
+        print(f"WD amount state triggered for {uid}: {text}")
         try:
-            amount  = int(text)
-            r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-            balance = r.json().get("balance", 0)
-            if amount < MIN_WITHDRAWAL:
-                bot.send_message(m.chat.id, f"❌ Minimum: <b>{MIN_WITHDRAWAL} ብር</b>"); return
-            if amount > MAX_WITHDRAWAL:
-                bot.send_message(m.chat.id, f"❌ Maximum: <b>{MAX_WITHDRAWAL} ብር</b>"); return
-            if amount > balance:
-                bot.send_message(m.chat.id, f"❌ Balance አናሳ! Balance: {balance} ብር"); return
-            fb_set(f"bot/state/{uid}", "waiting_wd_account")
-            fb_set(f"temp_wd/{uid}/amount", amount)
-            kb = InlineKeyboardMarkup(row_width=2)
-            kb.add(
-                InlineKeyboardButton("🏦 CBE",      callback_data="wdm_CBE"),
-                InlineKeyboardButton("📱 Telebirr", callback_data="wdm_Telebirr"),
-                InlineKeyboardButton("🏧 Awash",    callback_data="wdm_Awash"),
-                InlineKeyboardButton("💳 Other",    callback_data="wdm_Other"),
-            )
-            bot.send_message(m.chat.id, f"🏧 <b>{amount} ብር</b>\nምን አይነት account?", reply_markup=kb)
+            amount = int(text)
         except ValueError:
             bot.send_message(m.chat.id, "❌ ቁጥር ብቻ ላክ! ለምሳሌ: <code>500</code>")
+            return
+        try:
+            r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+            balance = r.json().get("balance", 0)
+        except:
+            balance = fb_get(f"users/{uid}/balance") or 0
+        if amount < MIN_WITHDRAWAL:
+            bot.send_message(m.chat.id, f"❌ Minimum: <b>{MIN_WITHDRAWAL} ብር</b>")
+            return
+        if amount > MAX_WITHDRAWAL:
+            bot.send_message(m.chat.id, f"❌ Maximum: <b>{MAX_WITHDRAWAL} ብር</b>")
+            return
+        if amount > balance:
+            bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
+            return
+        fb_set(f"bot/state/{uid}", "waiting_wd_account")
+        fb_set(f"temp_wd/{uid}/amount", amount)
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton("🏦 CBE",      callback_data="wdm_CBE"),
+            InlineKeyboardButton("📱 Telebirr", callback_data="wdm_Telebirr"),
+            InlineKeyboardButton("🏧 Awash",    callback_data="wdm_Awash"),
+            InlineKeyboardButton("💳 Other",    callback_data="wdm_Other"),
+        )
+        bot.send_message(m.chat.id, f"🏧 <b>{amount} ብር</b>\nምን አይነት account?", reply_markup=kb)
         return
 
+    # ✅ FIX: Withdrawal account number state
     if state == "waiting_wd_acct_num":
+        print(f"WD acct num state triggered for {uid}: {text}")
         account = text.strip()
         method  = fb_get(f"temp_wd/{uid}/method") or "—"
         if method == "CBE":
             if not (account.isdigit() and len(account) == 13):
                 bot.send_message(m.chat.id, "❌ CBE account number <b>13 digit</b> ያስገቡ!")
-                fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); send_menu(m.chat.id); return
+                fb_set(f"bot/state/{uid}", None)
+                fb_set(f"temp_wd/{uid}", None)
+                send_menu(m.chat.id)
+                return
         elif method == "Telebirr":
             if not (account.isdigit() and len(account) == 10):
                 bot.send_message(m.chat.id, "❌ Telebirr ስልክ ቁጥር <b>10 digit</b> ያስገቡ!")
-                fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); send_menu(m.chat.id); return
+                fb_set(f"bot/state/{uid}", None)
+                fb_set(f"temp_wd/{uid}", None)
+                send_menu(m.chat.id)
+                return
         elif method == "Awash":
             if not (account.isdigit() and len(account) == 14):
                 bot.send_message(m.chat.id, "❌ Awash account number <b>14 digit</b> ያስገቡ!")
-                fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); send_menu(m.chat.id); return
+                fb_set(f"bot/state/{uid}", None)
+                fb_set(f"temp_wd/{uid}", None)
+                send_menu(m.chat.id)
+                return
 
         amount  = fb_get(f"temp_wd/{uid}/amount") or 0
-        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-        balance = r.json().get("balance", 0)
+        try:
+            r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+            balance = r.json().get("balance", 0)
+        except:
+            balance = fb_get(f"users/{uid}/balance") or 0
+
         pending = fb_get(f"users/{uid}/pending_withdrawal") or 0
         if pending > 0:
             bot.send_message(m.chat.id,
                 f"⚠️ አስቀድሞ Pending Withdrawal አለዎት!\n💰 {pending} ብር እየተጠበቀ ነው።")
-            fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); return
+            fb_set(f"bot/state/{uid}", None)
+            fb_set(f"temp_wd/{uid}", None)
+            return
         if amount > balance:
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
-            fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); return
-        requests.post(f"{SERVER}/update-balance",
-            json={"uid": uid, "amount": amount, "type": "subtract"}, timeout=5)
+            fb_set(f"bot/state/{uid}", None)
+            fb_set(f"temp_wd/{uid}", None)
+            return
+
+        try:
+            requests.post(f"{SERVER}/update-balance",
+                json={"uid": uid, "amount": amount, "type": "subtract"}, timeout=5)
+        except Exception as e:
+            print(f"Subtract balance error: {e}")
+
         fb_set(f"users/{uid}/pending_withdrawal", amount)
         result = fb_push("bot/withdrawals", {
             "user_id": uid,
@@ -1045,6 +1090,7 @@ def handle_text(m):
         })
         fb_set(f"bot/state/{uid}", None)
         fb_set(f"temp_wd/{uid}", None)
+
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("🎮 Play Game",
                web_app=WebAppInfo(f"{WEBAPP_URL}/?uid={uid}")))
@@ -1062,6 +1108,7 @@ def handle_text(m):
             f"📲 {method} — <code>{account}</code>\n\n"
             f"⏳ እስከ 5 ደቂቃ ሊቆይ ይችላል፣ ትንሽ ይጠብቁ...",
             reply_markup=kb)
+
         name = m.from_user.username or m.from_user.first_name
         if method == "Telebirr":
             bot.send_message(ADMIN_ID,
@@ -1075,6 +1122,11 @@ def handle_text(m):
                 f"📲 {method} — <code>{account}</code>\n\n"
                 f"⚠️ Admin Panel ላይ ያስተናግዱ")
         return
+
+    # ✅ FIX: Unknown state — clear and show menu
+    if state and state not in [None, ""]:
+        print(f"Unknown state for {uid}: {state} — clearing")
+        fb_set(f"bot/state/{uid}", None)
 
     send_menu(m.chat.id)
 
@@ -1097,16 +1149,20 @@ def handle_callback(c):
 
     elif data.startswith("pay_"):
         amount = int(data.split("_")[1])
-        fb_set(f"temp/{uid}", {"amount": amount})
+        # ✅ FIX: retry_count ጭምር ያስቀምጥ
+        fb_set(f"temp/{uid}", {"amount": amount, "retry_count": 0})
         bot.send_message(c.message.chat.id,
-            f"✅ <b>{amount} ብር Deposit</b>\n"
+            f"✅ <b>{amount} ብር Deposit</b>\n\n"
             f"🏦 CBE: <code>{get_cbe_account()}</code>\n"
             f"📱 Telebirr: <code>{get_telebirr_account()}</code>\n\n"
             f"💸 ከፍለህ → 📸 Screenshot ላክ")
 
     elif data == "balance":
-        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-        bal = r.json().get("balance", 0)
+        try:
+            r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+            bal = r.json().get("balance", 0)
+        except:
+            bal = fb_get(f"users/{uid}/balance") or 0
         pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
         text = f"💰 <b>Balance: {bal} ብር</b>"
         if pending_wd:
@@ -1114,21 +1170,33 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id, text)
 
     elif data == "withdraw":
-        r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-        bal = r.json().get("balance", 0)
+        # ✅ FIX: Withdraw callback — state በትክክል ይቀምጣል
+        try:
+            r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+            bal = r.json().get("balance", 0)
+        except:
+            bal = fb_get(f"users/{uid}/balance") or 0
         if bal < MIN_WITHDRAWAL:
             bot.send_message(c.message.chat.id,
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
             return
+        # ✅ FIX: state ከመቀመጡ በፊት ያሉ ሌሎች state ያጸዳ
+        fb_set(f"temp_wd/{uid}", None)
         fb_set(f"bot/state/{uid}", "waiting_wd_amount")
+        print(f"Withdraw initiated for {uid}, balance={bal}, state set to waiting_wd_amount")
         bot.send_message(c.message.chat.id,
-            f"🏧 <b>Withdrawal</b>\n💰 Balance: <b>{bal} ብር</b>\n\nምን ያህል? ቁጥር ላክ:")
+            f"🏧 <b>Withdrawal</b>\n"
+            f"💰 Balance: <b>{bal} ብር</b>\n\n"
+            f"ምን ያህል ብር ማውጣት ትፈልጋለህ?\n"
+            f"(Min: {MIN_WITHDRAWAL} | Max: {MAX_WITHDRAWAL})\n\n"
+            f"ቁጥር ብቻ ላክ:")
 
     elif data == "history":
         payments  = fb_get("payments") or {}
         user_txns = [p for p in payments.values() if isinstance(p, dict) and str(p.get("user_id")) == uid]
         if not user_txns:
-            bot.send_message(c.message.chat.id, "📊 ምንም ታሪክ የለም"); return
+            bot.send_message(c.message.chat.id, "📊 ምንም ታሪክ የለም")
+            return
         user_txns.sort(key=lambda x: x.get("time", 0), reverse=True)
         icons = {"approved": "✅", "rejected": "❌", "pending": "⏳", "cancelled": "🚫"}
         lines = ["📊 <b>ግብይት ታሪክ:</b>\n"]
@@ -1153,22 +1221,37 @@ def handle_callback(c):
         method = data.replace("wdm_", "")
         fb_set(f"temp_wd/{uid}/method", method)
         fb_set(f"bot/state/{uid}", "waiting_wd_acct_num")
-        bot.send_message(c.message.chat.id, f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
+        print(f"WD method set for {uid}: {method}, state=waiting_wd_acct_num")
+        if method == "CBE":
+            hint = "13 digit account number"
+        elif method == "Telebirr":
+            hint = "10 digit ስልክ ቁጥር"
+        elif method == "Awash":
+            hint = "14 digit account number"
+        else:
+            hint = "Account number"
+        bot.send_message(c.message.chat.id,
+            f"📲 <b>{method}</b>\n\n🔢 {hint} ላክ:")
 
     elif data.startswith("ap_"):
         parts  = data.split("_")
         pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
-        r = requests.post(f"{SERVER}/update-balance",
-            json={"uid": u_id, "amount": amount, "type": "add"}, timeout=5)
-        new_bal = r.json().get("balance", 0)
+        try:
+            r = requests.post(f"{SERVER}/update-balance",
+                json={"uid": u_id, "amount": amount, "type": "add"}, timeout=5)
+            new_bal = r.json().get("balance", 0)
+        except:
+            new_bal = 0
         fb_set(f"payments/{pid}/status", "approved")
         dep_snap = fb_get("analytics/totalDeposits") or 0
         fb_set("analytics/totalDeposits", dep_snap + amount)
+        fb_set(f"temp/{u_id}", None)
         try:
             bot.edit_message_caption(chat_id=c.message.chat.id,
                 message_id=c.message.message_id,
                 caption=c.message.caption + "\n\n✅ <b>MANUALLY APPROVED</b>")
-        except Exception: pass
+        except Exception:
+            pass
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🎮 Play Game",
@@ -1186,7 +1269,8 @@ def handle_callback(c):
                 f"💰 {amount} ብር ታከለ!\n"
                 f"💼 Balance: <b>{new_bal} ብር</b>",
                 reply_markup=kb)
-        except Exception: pass
+        except Exception:
+            pass
 
     elif data.startswith("re_"):
         parts = data.split("_")
@@ -1197,11 +1281,13 @@ def handle_callback(c):
             bot.edit_message_caption(chat_id=c.message.chat.id,
                 message_id=c.message.message_id,
                 caption=c.message.caption + "\n\n❌ <b>REJECTED</b>")
-        except Exception: pass
+        except Exception:
+            pass
         try:
             bot.send_message(int(u_id),
                 "📸 Screenshot ጥራት የለውም\n\nግልጽ የሆነ screenshot ድጋሚ ላክ 👇")
-        except Exception: pass
+        except Exception:
+            pass
 
 
 MATCH_TIMEOUT = 5 * 60
@@ -1231,7 +1317,8 @@ def timeout_checker():
                         f"⏰ <b>Deposit Cancelled!</b>\n\n💰 {amount} ብር\n\n"
                         f"⚠️ SMS 5 ደቂቃ ውስጥ አልደረሰም\n\nእንደገና deposit ሞክር 👇")
                     send_menu(int(uid))
-                except Exception: pass
+                except Exception:
+                    pass
                 bot.send_message(ADMIN_ID,
                     f"⏰ <b>Timeout — Auto Cancelled</b>\n\n"
                     f"👤 {display} (<code>{uid}</code>)\n"
