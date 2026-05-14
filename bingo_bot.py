@@ -480,9 +480,9 @@ def handle_referral_registration(new_uid, referrer_uid):
 
 def _give_referral_bonus(referrer_uid, bonus_amount, count):
     try:
-        bal     = fb_get(f"users/{referrer_uid}/balance") or 0
-        new_bal = bal + bonus_amount
-        fb_set(f"users/{referrer_uid}/balance", new_bal)
+        r = requests.post(f"{SERVER}/update-balance",
+    json={"uid": referrer_uid, "amount": bonus_amount, "type": "add"}, timeout=5)
+new_bal = r.json().get("balance", 0)
         fb_push(f"referrals/{referrer_uid}/bonuses", {
             "amount": bonus_amount,
             "count":  count,
@@ -512,23 +512,11 @@ def get_referral_link(uid):
 # ══════════════════════════════════════════════════════
 def give_welcome_bonus(uid, display):
     try:
-        already = fb_get(f"users/{uid}/welcome_bonus_given")
-        if already:
-            return
-
-        bal     = fb_get(f"users/{uid}/balance") or 0
-        new_bal = bal + WELCOME_BONUS
-        fb_set(f"users/{uid}/balance", new_bal)
-        fb_set(f"users/{uid}/welcome_bonus_given", True)
-
         bot.send_message(int(uid),
-            f"🎁 <b>Welcome Bonus!</b>\n\n"
+            f"🎁 <b>እንኳን ደህና መጣህ!</b>\n\n"
             f"ወደ Bingo Pro እንኳን ደህና መጣህ! 🎮\n\n"
-            f"🎉 <b>+{WELCOME_BONUS} ብር</b> ታደለህ!\n"
-            f"💼 Balance: <b>{new_bal} ብር</b>\n\n"
+            f"🎉 <b>+20 ብር</b> Balance ላይ ታከለ!\n\n"
             f"▶️ አሁን መጫወት ትችላለህ!")
-
-        print(f"Welcome bonus given to {uid}")
     except Exception as e:
         print(f"give_welcome_bonus error: {e}")
 
@@ -544,11 +532,10 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
                 f"⚠️ Amount 0 ነው! Manual check:\n👤 <code>{uid}</code>\n📋 <code>{ref}</code>")
             return
 
-        bal     = fb_get(f"users/{uid}/balance") or 0
-        new_bal = bal + amount
-
-        fb_set(f"users/{uid}/balance",     new_bal)
-        fb_set(f"payments/{pid}/status",   "approved")
+        r = requests.post(f"{SERVER}/update-balance",
+    json={"uid": uid, "amount": amount, "type": "add"}, timeout=5)
+new_bal = r.json().get("balance", 0)
+fb_set(f"payments/{pid}/status", "approved")
         fb_set(f"payments/{pid}/verified", True)
         fb_set(f"payments/{pid}/ref",      ref)
         fb_set(f"temp/{uid}",              None)
@@ -827,7 +814,9 @@ def cmd_start(m):
             timeout=5)
     except:
         pass
-    is_new = fb_get(f"users/{uid}/balance") is None
+    r = requests.get(f"{SERVER}/get      
+        -balance", params={"uid": uid}, timeout=5)
+is_new = r.json().get("balance", 0) == 0 and fb_get(f"users/{uid}/joined_at") is None
 
     if is_new:
         fb_set(f"users/{uid}/balance",       0)
@@ -876,7 +865,8 @@ def cmd_start(m):
 @bot.message_handler(commands=["balance"])
 def cmd_balance(m):
     uid        = str(m.chat.id)
-    bal        = fb_get(f"users/{uid}/balance") or 0
+    r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+    bal = r.json().get("balance", 0)
     pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
     text = f"💰 <b>Balance: {bal} ብር</b>"
     if pending_wd:
@@ -1066,7 +1056,8 @@ def handle_text(m):
     if state == "waiting_wd_amount":
         try:
             amount  = int(text)
-            balance = fb_get(f"users/{uid}/balance") or 0
+            r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+balance = r.json().get("balance", 0)
             if amount < MIN_WITHDRAWAL:
                 bot.send_message(m.chat.id, f"❌ Minimum: <b>{MIN_WITHDRAWAL} ብር</b>"); return
             if amount > MAX_WITHDRAWAL:
@@ -1104,7 +1095,8 @@ def handle_text(m):
                 fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); send_menu(m.chat.id); return
 
         amount  = fb_get(f"temp_wd/{uid}/amount") or 0
-        balance = fb_get(f"users/{uid}/balance") or 0
+        r = requests.get(f"{SERVER}/get      -balance", params={"uid": uid}, timeout=5)
+balance = r.json().get("balance", 0)
         pending = fb_get(f"users/{uid}/pending_withdrawal") or 0
         if pending > 0:
             bot.send_message(m.chat.id,
@@ -1114,7 +1106,8 @@ def handle_text(m):
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
             fb_set(f"bot/state/{uid}", None); fb_set(f"temp_wd/{uid}", None); return
 
-        fb_set(f"users/{uid}/balance",            balance - amount)
+        requests.post(f"{SERVER}/update-balance",
+            json={"uid": uid, "amount": amount, "type": "subtract"}, timeout=5)
         fb_set(f"users/{uid}/pending_withdrawal", amount)
         result = fb_push("bot/withdrawals", {
             "user_id": uid,
@@ -1190,7 +1183,8 @@ def handle_callback(c):
             f"💸 ከፍለህ → 📸 Screenshot ላክ")
 
     elif data == "balance":
-        bal        = fb_get(f"users/{uid}/balance") or 0
+    r = requests.get(f"{SERVER}/get          -balance", params={"uid": uid}, timeout=5)
+    bal = r.json().get("balance", 0)
         pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
         text = f"💰 <b>Balance: {bal} ብር</b>"
         if pending_wd:
@@ -1198,7 +1192,9 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id, text)
 
     elif data == "withdraw":
-        bal = fb_get(f"users/{uid}/balance") or 0
+    r = requests.get(f"{SERVER}/get        
+        -balance", params={"uid": uid}, timeout=5)
+    bal = r.json().get("balance", 0)
         if bal < MIN_WITHDRAWAL:
             bot.send_message(c.message.chat.id,
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
@@ -1239,11 +1235,12 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id, f"📲 <b>{method}</b>\n\n🔢 Account number ላክ:")
 
     elif data.startswith("ap_"):
-        parts  = data.split("_")
-        pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
-        bal    = fb_get(f"users/{u_id}/balance") or 0
-        fb_set(f"users/{u_id}/balance", bal + amount)
-        fb_set(f"payments/{pid}/status", "approved")
+    parts  = data.split("_")
+    pid    = parts[1]; u_id = parts[2]; amount = int(parts[3])
+    r = requests.post(f"{SERVER}/update-balance",
+        json={"uid": u_id, "amount": amount, "type": "add"}, timeout=5)
+    new_bal = r.json().get("balance", 0)
+    fb_set(f"payments/{pid}/status", "approved")
         dep_snap = fb_get("analytics/totalDeposits") or 0
         fb_set("analytics/totalDeposits", dep_snap + amount)
         try:
@@ -1266,7 +1263,7 @@ def handle_callback(c):
             bot.send_message(int(u_id),
                 f"✅ <b>Deposit Approved!</b>\n\n"
                 f"💰 {amount} ብር ታከለ!\n"
-                f"💼 Balance: <b>{bal+amount} ብር</b>",
+                f"💼 Balance: <b>{new_bal} ብር</b>",
                 reply_markup=kb)
         except Exception: pass
 
@@ -1335,21 +1332,19 @@ threading.Thread(target=timeout_checker, daemon=True).start()
 def notification_listener():
     while True:
         try:
-            users = fb_get("notifications") or {}
-            for uid, notif in users.items():
-                # ✅ FIX: digit ካልሆነ skip
-                if not uid.isdigit():
+            r = requests.get(f"{SERVER}/unread-notifications", timeout=5)
+            notifs = r.json()
+            for n in notifs:
+                if not str(n["uid"]).isdigit():
                     continue
-                if not isinstance(notif, dict):
-                    continue
-                if not notif.get("read"):
-                    try:
-                        bot.send_message(int(uid), notif.get("message", ""))
-                        fb_set(f"notifications/{uid}/read", True)
-                    except Exception as e:
-                        print(f"Notify error {uid}: {e}")
+                try:
+                    bot.send_message(int(n["uid"]), n["message"])
+                    requests.post(f"{SERVER}/mark-notification-read",
+                        json={"id": n["id"]}, timeout=5)
+                except Exception as e:
+                    print(f"Notify error {n['uid']}: {e}")
         except Exception as e:
-            print(f"Notification listener error: {e}")
+            print(f"Listener error: {e}")
         time.sleep(5)
 
 threading.Thread(target=notification_listener, daemon=True).start()
@@ -1385,7 +1380,8 @@ def daily_reminder_loop():
                     if hours_since_reminder < REMINDER_HOURS:
                         continue
 
-                bal = user.get("balance", 0) or 0
+                r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
+bal = r.json().get("balance", 0)
 
                 try:
                     if bal > 0:
