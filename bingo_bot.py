@@ -437,7 +437,7 @@ def _give_referral_bonus(referrer_uid, bonus_amount, count):
     try:
         r = requests.post(f"{SERVER}/update-balance",
             json={"uid": referrer_uid, "amount": bonus_amount, "type": "add"}, timeout=5)
-        new_bal = r.json().get("balance", 0)
+        new_bal = int(float(r.json().get("balance", 0) or 0))
         fb_push(f"referrals/{referrer_uid}/bonuses", {
             "amount": bonus_amount,
             "count":  count,
@@ -483,7 +483,7 @@ def do_approve(pid, uid, amount, ref, sms_text=""):
 
         r = requests.post(f"{SERVER}/update-balance",
             json={"uid": uid, "amount": amount, "type": "add"}, timeout=5)
-        new_bal = r.json().get("balance", 0)
+        new_bal = int(float(r.json().get("balance", 0) or 0))
         fb_set(f"payments/{pid}/status", "approved")
         fb_set(f"payments/{pid}/verified", True)
         fb_set(f"payments/{pid}/ref",      ref)
@@ -741,7 +741,7 @@ def cmd_start(m):
         return
 
     if len(args) > 1 and args[1].startswith("withdraw"):
-        bal = fb_get(f"users/{uid}/balance") or 0
+        bal = int(float(fb_get(f"users/{uid}/balance") or 0))
         if bal < MIN_WITHDRAWAL:
             bot.send_message(m.chat.id,
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
@@ -764,7 +764,7 @@ def cmd_start(m):
 
     try:
         r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-        is_new = r.json().get("balance", 0) == 0 and fb_get(f"users/{uid}/joined_at") is None
+        is_new = int(float(r.json().get("balance", 0) or 0)) == 0 and fb_get(f"users/{uid}/joined_at") is None
     except:
         is_new = False
 
@@ -814,7 +814,7 @@ def cmd_start(m):
 def cmd_balance(m):
     uid = str(m.chat.id)
     r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-    bal = r.json().get("balance", 0)
+    bal = int(float(r.json().get("balance", 0) or 0))
     pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
     text = f"💰 <b>Balance: {bal} ብር</b>"
     if pending_wd:
@@ -1001,9 +1001,9 @@ def handle_text(m):
             return
         try:
             r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-            balance = r.json().get("balance", 0)
+            balance = int(float(r.json().get("balance", 0) or 0))
         except:
-            balance = fb_get(f"users/{uid}/balance") or 0
+            balance = int(float(fb_get(f"users/{uid}/balance") or 0))
         if amount < MIN_WITHDRAWAL:
             bot.send_message(m.chat.id, f"❌ Minimum: <b>{MIN_WITHDRAWAL} ብር</b>")
             return
@@ -1055,9 +1055,9 @@ def handle_text(m):
         amount  = fb_get(f"temp_wd/{uid}/amount") or 0
         try:
             r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-            balance = r.json().get("balance", 0)
+            balance = int(float(r.json().get("balance", 0) or 0))
         except:
-            balance = fb_get(f"users/{uid}/balance") or 0
+            balance = int(float(fb_get(f"users/{uid}/balance") or 0))
 
         pending = fb_get(f"users/{uid}/pending_withdrawal") or 0
         if pending > 0:
@@ -1160,9 +1160,9 @@ def handle_callback(c):
     elif data == "balance":
         try:
             r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-            bal = r.json().get("balance", 0)
+            bal = int(float(r.json().get("balance", 0) or 0))
         except:
-            bal = fb_get(f"users/{uid}/balance") or 0
+            bal = int(float(fb_get(f"users/{uid}/balance") or 0))
         pending_wd = fb_get(f"users/{uid}/pending_withdrawal") or 0
         text = f"💰 <b>Balance: {bal} ብር</b>"
         if pending_wd:
@@ -1173,9 +1173,9 @@ def handle_callback(c):
         # ✅ FIX: Withdraw callback — state በትክክል ይቀምጣል
         try:
             r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-            bal = r.json().get("balance", 0)
+            bal = int(float(r.json().get("balance", 0) or 0))
         except:
-            bal = fb_get(f"users/{uid}/balance") or 0
+            bal = int(float(fb_get(f"users/{uid}/balance") or 0))
         if bal < MIN_WITHDRAWAL:
             bot.send_message(c.message.chat.id,
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
@@ -1239,7 +1239,7 @@ def handle_callback(c):
         try:
             r = requests.post(f"{SERVER}/update-balance",
                 json={"uid": u_id, "amount": amount, "type": "add"}, timeout=5)
-            new_bal = r.json().get("balance", 0)
+            new_bal = int(float(r.json().get("balance", 0) or 0))
         except:
             new_bal = 0
         fb_set(f"payments/{pid}/status", "approved")
@@ -1381,7 +1381,7 @@ def daily_reminder_loop():
 
                 try:
                     r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
-                    bal = r.json().get("balance", 0)
+                    bal = int(float(r.json().get("balance", 0) or 0))
                 except:
                     bal = 0
 
