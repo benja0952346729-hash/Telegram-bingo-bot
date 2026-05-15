@@ -1167,7 +1167,7 @@ def handle_text(m):
 
         update_balance(uid, amount, "subtract")
         db_set(f"users/{uid}/pending_withdrawal", amount)
-
+        print(f"DEBUG withdraw saving: uid={uid} amount={amount} method={method} account={account}")
         result = db_push("bot/withdrawals", {
             "user_id": uid,
             "display": m.from_user.username or m.from_user.first_name or uid,
