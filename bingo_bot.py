@@ -777,7 +777,7 @@ def cmd_start(m):
             bot.send_message(m.chat.id,
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
             return
-        fb_set(f"bot/state/{uid}", "waiting_wd_amount")
+        fb_set(f"botstate_{uid}", "waiting_wd_amount")
         bot.send_message(m.chat.id,
             f"🏧 <b>Withdrawal</b>\n💰 Balance: <b>{bal} ብር</b>\n\nምን ያህል ብር? ቁጥር ላክ:")
         return
@@ -989,7 +989,7 @@ ALLOWED_SMS_SENDERS = [ADMIN_ID]
 def handle_text(m):
     uid   = str(m.from_user.id)
     text  = m.text.strip()
-    raw_state = fb_get(f"bot/state/{uid}")
+    raw_state = fb_get(f"botstate_{uid}")
     # ✅ FIX: server JSON quotes ያስወግዳል
     if isinstance(raw_state, str):
         state = raw_state.strip('"').strip("'")
@@ -1009,10 +1009,10 @@ def handle_text(m):
         account = text.strip()
         if not (account.isdigit() and len(account) == 13):
             bot.send_message(m.chat.id, "❌ CBE account <b>13 digit</b> ያስፈልጋል!")
-            fb_set(f"bot/state/{uid}", None)
+            fb_set(f"botstate_{uid}", None)
             return
         fb_set("bot/settings/cbe_account", account)
-        fb_set(f"bot/state/{uid}", None)
+        fb_set(f"botstate_{uid}", None)
         bot.send_message(m.chat.id, f"✅ CBE Account ተቀይሯል!\n🏦 <code>{account}</code>")
         return
 
@@ -1020,10 +1020,10 @@ def handle_text(m):
         account = text.strip()
         if not (account.isdigit() and len(account) == 10):
             bot.send_message(m.chat.id, "❌ Telebirr <b>10 digit</b> ያስፈልጋል!")
-            fb_set(f"bot/state/{uid}", None)
+            fb_set(f"botstate_{uid}", None)
             return
         fb_set("bot/settings/telebirr_account", account)
-        fb_set(f"bot/state/{uid}", None)
+        fb_set(f"botstate_{uid}", None)
         bot.send_message(m.chat.id, f"✅ Telebirr Account ተቀይሯል!\n📱 <code>{account}</code>")
         return
 
@@ -1049,8 +1049,8 @@ def handle_text(m):
         if amount > balance:
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
             return
-        fb_set(f"bot/state/{uid}", "waiting_wd_acct_num")
-        fb_set(f"temp_wd/{uid}/amount", amount)
+        fb_set(f"botstate_{uid}", "waiting_wd_acct_num")
+        fb_set(f"tempwd_{uid}_amount", amount)
         kb = InlineKeyboardMarkup(row_width=2)
         kb.add(
             InlineKeyboardButton("🏦 CBE",      callback_data="wdm_CBE"),
@@ -1065,30 +1065,30 @@ def handle_text(m):
     if state == "waiting_wd_acct_num":
         print(f"WD acct num state triggered for {uid}: {text}")
         account = text.strip()
-        method  = fb_get(f"temp_wd/{uid}/method") or "—"
+        method  = fb_get(f"tempwd_{uid}_method") or "—"
         if method == "CBE":
             if not (account.isdigit() and len(account) == 13):
                 bot.send_message(m.chat.id, "❌ CBE account number <b>13 digit</b> ያስገቡ!")
-                fb_set(f"bot/state/{uid}", None)
-                fb_set(f"temp_wd/{uid}", None)
+                fb_set(f"botstate_{uid}", None)
+                fb_set(f"tempwd_{uid}", None)
                 send_menu(m.chat.id)
                 return
         elif method == "Telebirr":
             if not (account.isdigit() and len(account) == 10):
                 bot.send_message(m.chat.id, "❌ Telebirr ስልክ ቁጥር <b>10 digit</b> ያስገቡ!")
-                fb_set(f"bot/state/{uid}", None)
-                fb_set(f"temp_wd/{uid}", None)
+                fb_set(f"botstate_{uid}", None)
+                fb_set(f"tempwd_{uid}", None)
                 send_menu(m.chat.id)
                 return
         elif method == "Awash":
             if not (account.isdigit() and len(account) == 14):
                 bot.send_message(m.chat.id, "❌ Awash account number <b>14 digit</b> ያስገቡ!")
-                fb_set(f"bot/state/{uid}", None)
-                fb_set(f"temp_wd/{uid}", None)
+                fb_set(f"botstate_{uid}", None)
+                fb_set(f"tempwd_{uid}", None)
                 send_menu(m.chat.id)
                 return
 
-        amount  = fb_get(f"temp_wd/{uid}/amount") or 0
+        amount  = fb_get(f"tempwd_{uid}_amount") or 0
         try:
             r = requests.get(f"{SERVER}/get-balance", params={"uid": uid}, timeout=5)
             balance = int(float(r.json().get("balance", 0) or 0))
@@ -1099,13 +1099,13 @@ def handle_text(m):
         if pending > 0:
             bot.send_message(m.chat.id,
                 f"⚠️ አስቀድሞ Pending Withdrawal አለዎት!\n💰 {pending} ብር እየተጠበቀ ነው።")
-            fb_set(f"bot/state/{uid}", None)
-            fb_set(f"temp_wd/{uid}", None)
+            fb_set(f"botstate_{uid}", None)
+            fb_set(f"tempwd_{uid}", None)
             return
         if amount > balance:
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
-            fb_set(f"bot/state/{uid}", None)
-            fb_set(f"temp_wd/{uid}", None)
+            fb_set(f"botstate_{uid}", None)
+            fb_set(f"tempwd_{uid}", None)
             return
 
         try:
@@ -1124,8 +1124,8 @@ def handle_text(m):
             "status":  "pending",
             "time":    datetime.now().strftime("%Y-%m-%d %H:%M")
         })
-        fb_set(f"bot/state/{uid}", None)
-        fb_set(f"temp_wd/{uid}", None)
+        fb_set(f"botstate_{uid}", None)
+        fb_set(f"tempwd_{uid}", None)
 
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("🎮 Play Game",
@@ -1162,7 +1162,7 @@ def handle_text(m):
     # ✅ FIX: Unknown state — clear and show menu
     if state and state not in [None, ""]:
         print(f"Unknown state for {uid}: {state} — clearing")
-        fb_set(f"bot/state/{uid}", None)
+        fb_set(f"botstate_{uid}", None)
 
     send_menu(m.chat.id)
 
@@ -1217,8 +1217,8 @@ def handle_callback(c):
                 f"❌ Balance አናሳ!\nMinimum: <b>{MIN_WITHDRAWAL} ብር</b>\nBalance: <b>{bal} ብር</b>")
             return
         # ✅ FIX: state ከመቀመጡ በፊት ያሉ ሌሎች state ያጸዳ
-        fb_set(f"temp_wd/{uid}", None)
-        fb_set(f"bot/state/{uid}", "waiting_wd_amount")
+        fb_set(f"tempwd_{uid}", None)
+        fb_set(f"botstate_{uid}", "waiting_wd_amount")
         print(f"Withdraw initiated for {uid}, balance={bal}, state set to waiting_wd_amount")
         bot.send_message(c.message.chat.id,
             f"🏧 <b>Withdrawal</b>\n"
@@ -1246,17 +1246,17 @@ def handle_callback(c):
         _show_referral(c.message.chat.id, uid)
 
     elif data == "set_cbe":
-        fb_set(f"bot/state/{uid}", "waiting_set_cbe")
+        fb_set(f"botstate_{uid}", "waiting_set_cbe")
         bot.send_message(c.message.chat.id, "🏦 አዲስ CBE Account Number ላክ (13 digit):")
 
     elif data == "set_telebirr":
-        fb_set(f"bot/state/{uid}", "waiting_set_telebirr")
+        fb_set(f"botstate_{uid}", "waiting_set_telebirr")
         bot.send_message(c.message.chat.id, "📱 አዲስ Telebirr ስልክ ቁጥር ላክ (10 digit):")
 
     elif data.startswith("wdm_"):
         method = data.replace("wdm_", "")
-        fb_set(f"temp_wd/{uid}/method", method)
-        fb_set(f"bot/state/{uid}", "waiting_wd_acct_num")
+        fb_set(f"tempwd_{uid}_method", method)
+        fb_set(f"botstate_{uid}", "waiting_wd_acct_num")
         print(f"WD method set for {uid}: {method}, state=waiting_wd_acct_num")
         if method == "CBE":
             hint = "13 digit account number"
