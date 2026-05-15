@@ -550,23 +550,28 @@ def is_bank_sms(text):
 # ✅ FIX: Screenshot handler — temp check ተስተካክሏል
 def process_screenshot(m):
     uid  = str(m.from_user.id)
+    # ✅ FIX: temp data flat key ሆኖ ይጠራል
     raw_temp = fb_get(f"temp/{uid}")
+    temp = None
+    amount = 0
 
-    # ✅ FIX: temp ምንም አይነት format ቢመጣ handle ያደርጋል
     if isinstance(raw_temp, dict):
         temp = raw_temp
-    elif isinstance(raw_temp, (int, float, str)):
-        # server number ወይም string ስቀምጥ dict አድርገው
+        amount = int(float(raw_temp.get("amount", 0) or 0))
+    elif isinstance(raw_temp, (int, float)):
+        amount = int(float(raw_temp))
+        temp = {"amount": amount}
+    elif isinstance(raw_temp, str):
         try:
-            temp = {"amount": int(float(raw_temp))}
+            amount = int(float(raw_temp))
+            temp = {"amount": amount}
         except:
-            temp = None
-    else:
-        temp = None
+            pass
 
-    amount = 0
-    if temp and isinstance(temp, dict):
-        amount = int(float(temp.get("amount", 0) or 0))
+    # ✅ FIX: retry_count ለብቻ ያምጣ
+    if temp and not temp.get("retry_count"):
+        rc = fb_get(f"temp/{uid}/retry_count")
+        temp["retry_count"] = int(rc) if rc else 0
 
     if not amount:
         kb = InlineKeyboardMarkup()
@@ -592,7 +597,11 @@ def process_screenshot(m):
 
     if not refs:
         retry_count = temp.get("retry_count", 0) + 1
-        fb_set(f"temp/{uid}/retry_count", retry_count)
+        # ✅ update full temp dict
+        _t = fb_get(f"temp/{uid}") or {}
+        if not isinstance(_t, dict): _t = {"amount": amount}
+        _t["retry_count"] = retry_count
+        fb_set(f"temp/{uid}", _t)
         if retry_count < 3:
             bot.send_message(m.chat.id,
                 f"⚠️ Screenshot ጥራት የለውም — ድጋሚ ላክ ({retry_count}/3)\n\n"
@@ -611,8 +620,11 @@ def process_screenshot(m):
             })
             if result:
                 pid = result.key
-                fb_set(f"temp/{uid}/pid", pid)
-                fb_set(f"temp/{uid}/retry_count", 0)
+                _t2 = fb_get(f"temp/{uid}") or {}
+                if not isinstance(_t2, dict): _t2 = {}
+                _t2["pid"] = pid
+                _t2["retry_count"] = 0
+                fb_set(f"temp/{uid}", _t2)
                 bot.send_message(m.chat.id, "📸 Screenshot ተቀብሏል!\n\n⏳ Admin እያረጋገጠ ነው...")
                 try:
                     bot.send_photo(ADMIN_ID, file_id,
@@ -630,7 +642,10 @@ def process_screenshot(m):
             return
 
     save_screenshot_hash(file_id, uid, amount)
-    fb_set(f"temp/{uid}/retry_count", 0)
+    _t3 = fb_get(f"temp/{uid}") or {}
+    if not isinstance(_t3, dict): _t3 = {}
+    _t3["retry_count"] = 0
+    fb_set(f"temp/{uid}", _t3)
 
     primary_ref = temp.get("ref", refs[0]).upper()
     if primary_ref not in refs:
@@ -652,8 +667,11 @@ def process_screenshot(m):
         return
 
     pid = result.key
-    fb_set(f"temp/{uid}/pid", pid)
-    fb_set(f"temp/{uid}/ref", primary_ref)
+    _t4 = fb_get(f"temp/{uid}") or {}
+    if not isinstance(_t4, dict): _t4 = {}
+    _t4["pid"] = pid
+    _t4["ref"] = primary_ref
+    fb_set(f"temp/{uid}", _t4)
 
     sms_pool = fb_get("bot/sms_pool") or {}
     matched_sms = None
@@ -971,7 +989,12 @@ ALLOWED_SMS_SENDERS = [ADMIN_ID]
 def handle_text(m):
     uid   = str(m.from_user.id)
     text  = m.text.strip()
-    state = fb_get(f"bot/state/{uid}")
+    raw_state = fb_get(f"bot/state/{uid}")
+    # ✅ FIX: server JSON quotes ያስወግዳል
+    if isinstance(raw_state, str):
+        state = raw_state.strip('"').strip("'")
+    else:
+        state = raw_state
 
     print(f"SENDER ID: {m.from_user.id} | STATE: {state} | TEXT: {text[:50]}")
 
@@ -1289,7 +1312,10 @@ def handle_callback(c):
         parts = data.split("_")
         pid   = parts[1]; u_id = parts[2]
         fb_set(f"payments/{pid}/status", "rejected")
-        fb_set(f"temp/{u_id}/retry_count", 0)
+        _t5 = fb_get(f"temp/{u_id}") or {}
+        if not isinstance(_t5, dict): _t5 = {}
+        _t5["retry_count"] = 0
+        fb_set(f"temp/{u_id}", _t5)
         try:
             bot.edit_message_caption(chat_id=c.message.chat.id,
                 message_id=c.message.message_id,
@@ -1353,7 +1379,15 @@ def notification_listener():
                 if not str(n["uid"]).isdigit():
                     continue
                 try:
-                    bot.send_message(int(n["uid"]), n["message"])
+                    uid = str(n["uid"])
+                    msg = n["message"]
+
+                    # ✅ FIX: Withdrawal approved/rejected → pending_withdrawal reset
+                    if "withdrawal" in msg.lower() or "ብር withdrawal" in msg or "ተፈቀደ" in msg or "rejected" in msg.lower() or "ተመለሰ" in msg:
+                        fb_set(f"users/{uid}/pending_withdrawal", 0)
+                        print(f"✅ pending_withdrawal cleared for {uid}")
+
+                    bot.send_message(int(uid), msg)
                     requests.post(f"{SERVER}/mark-notification-read",
                         json={"id": n["id"]}, timeout=5)
                 except Exception as e:
