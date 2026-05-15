@@ -30,7 +30,6 @@ WEBAPP_URL = "https://game-production-7f86.up.railway.app"
 SERVER     = os.environ.get("SERVER_URL", "https://admin-panel-production-b31a.up.railway.app")
 
 MIN_WITHDRAWAL = 50
-MAX_WITHDRAWAL = 5000
 
 REFERRAL_SMALL_COUNT = 20
 REFERRAL_SMALL_AMT   = 100
@@ -152,10 +151,26 @@ def ensure_user(uid, display):
         return False, 0
 
 def get_cbe_account():
-    return db_get("bot/settings/cbe_account") or ""
+    val = db_get("bot/settings/cbe_account")
+    if val:
+        return str(val).strip('"').strip("'")
+    try:
+        r = requests.get(f"{SERVER}/game-state", timeout=5)
+        v = r.json().get("bot/settings/cbe_account") or ""
+        return str(v).strip('"').strip("'")
+    except:
+        return ""
 
 def get_telebirr_account():
-    return db_get("bot/settings/telebirr_account") or ""
+    val = db_get("bot/settings/telebirr_account")
+    if val:
+        return str(val).strip('"').strip("'")
+    try:
+        r = requests.get(f"{SERVER}/game-state", timeout=5)
+        v = r.json().get("bot/settings/telebirr_account") or ""
+        return str(v).strip('"').strip("'")
+    except:
+        return ""
 
 # ══════════════════════════════════════════
 # USER BOT STATE  (in-memory + server backup)
@@ -1090,9 +1105,6 @@ def handle_text(m):
         if amount < MIN_WITHDRAWAL:
             bot.send_message(m.chat.id, f"❌ Minimum: <b>{MIN_WITHDRAWAL} ብር</b>")
             return
-        if amount > MAX_WITHDRAWAL:
-            bot.send_message(m.chat.id, f"❌ Maximum: <b>{MAX_WITHDRAWAL} ብር</b>")
-            return
         if amount > balance:
             bot.send_message(m.chat.id, f"❌ Balance አናሳ!\n💰 Balance: <b>{balance} ብር</b>")
             return
@@ -1247,7 +1259,7 @@ def handle_callback(c):
         bot.send_message(c.message.chat.id,
             f"🏧 <b>Withdrawal</b>\n"
             f"💰 Balance: <b>{bal} ብር</b>\n\n"
-            f"ምን ያህል ብር?\n(Min: {MIN_WITHDRAWAL} | Max: {MAX_WITHDRAWAL})\n\nቁጥር ብቻ ላክ:")
+            f"ምን ያህል ብር?\n(Min: {MIN_WITHDRAWAL} ብር)\n\nቁጥር ብቻ ላክ:")
 
     elif data == "history":
         payments  = db_get("payments") or {}
