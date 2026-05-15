@@ -1513,25 +1513,31 @@ threading.Thread(target=daily_report_loop, daemon=True).start()
 
 
 print("Bingo Bot starting...")
-time.sleep(3)
+# ✅ FIX: Conflict ለማስቀረት — webhook ሙሉ በሙሉ ያጸዳ ቀጥሎ ይጀምር
+time.sleep(5)
 
 while True:
     try:
-        bot.remove_webhook()
-        time.sleep(2)
+        bot.delete_webhook(drop_pending_updates=True)
+        time.sleep(3)
         print("Bot polling started...")
         bot.infinity_polling(
             skip_pending=True,
-            timeout=60,
-            long_polling_timeout=60,
-            allowed_updates=["message", "callback_query"]
+            timeout=30,
+            long_polling_timeout=30,
+            allowed_updates=["message", "callback_query"],
+            restart_on_change=False,
+            logger_level=None
         )
     except Exception as e:
         err = str(e)
         print(f"Bot crashed: {err}")
         if "Conflict" in err:
-            print("Conflict — waiting 15s for other instance to stop...")
-            time.sleep(15)
+            print("Conflict — webhook delete and wait 20s...")
+            try:
+                bot.delete_webhook(drop_pending_updates=True)
+            except: pass
+            time.sleep(20)
         else:
             print("Restarting in 5 seconds...")
             time.sleep(5)
