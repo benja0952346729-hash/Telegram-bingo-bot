@@ -695,10 +695,6 @@ def process_screenshot(m):
         set_temp(uid, None)
         return
 
-    if has_pending(uid):
-        bot.send_message(m.chat.id, "⚠️ አስቀድሞ Pending Payment አለዎት!\n\nAdmin እየተጠባበቅ ነው...")
-        return
-
     bot.send_message(m.chat.id, "🔍 Screenshot እየተነበበ ነው...")
 
     refs = extract_refs_from_screenshot(file_id)
@@ -1379,6 +1375,14 @@ def handle_callback(c):
             bot.send_message(c.message.chat.id,
                 f"❌ ቀሪ ሂሳብ አናሳ!\nቢያንስ: <b>{MIN_WITHDRAWAL} ብር</b>\nቀሪ ሂሳብ: <b>{bal} ብር</b>")
             return
+        # Pending withdrawal ካለ አይፈቀድም
+        pending_wd = db_get(f"users/{uid}/pending_withdrawal") or 0
+        if pending_wd > 0:
+            bot.send_message(c.message.chat.id,
+                f"⚠️ <b>አስቀድሞ በመጠባበቅ ላይ ያለ ክፍያ አለዎት!</b>\n\n"
+                f"💰 {pending_wd} ብር እየተጠበቀ ነው\n\n"
+                f"Admin ከፈቀደ በኋላ እንደገና ሞክር")
+            return
         set_botstate(uid, "waiting_wd_amount")
         bot.send_message(c.message.chat.id,
             f"🏧 <b>ገንዘብ ማውጣት</b>\n"
@@ -1386,20 +1390,56 @@ def handle_callback(c):
             f"ምን ያህል ብር?\n(ቢያንስ: {MIN_WITHDRAWAL} ብር)\n\nቁጥር ብቻ ላክ:")
 
     elif data == "history":
+        # ── Deposits ──
         payments  = db_get("payments") or {}
-        user_txns = [p for p in payments.values()
+        deposits  = [p for p in payments.values()
                      if isinstance(p, dict) and str(p.get("user_id")) == uid]
-        if not user_txns:
+
+        # ── Withdrawals ──
+        withdrawals_all = db_get("bot/withdrawals") or {}
+        withdrawals = [w for w in withdrawals_all.values()
+                       if isinstance(w, dict) and str(w.get("user_id")) == uid]
+
+        if not deposits and not withdrawals:
             bot.send_message(c.message.chat.id, "📊 ምንም ታሪክ የለም")
             return
-        user_txns.sort(key=lambda x: x.get("time", 0), reverse=True)
-        icons = {"approved": "✅", "rejected": "❌", "pending": "⏳", "cancelled": "🚫"}
+
+        dep_icons = {"approved": "✅", "rejected": "❌", "pending": "⏳", "cancelled": "🚫"}
+        wd_icons  = {"paid": "✅", "approved": "✅", "pending": "⏳",
+                     "rejected": "❌", "cancelled": "🚫"}
+
         lines = ["📊 <b>ግብይት ታሪክ:</b>\n"]
-        for p in user_txns[:10]:
-            icon = icons.get(p.get("status"), "❓")
-            t = (datetime.fromtimestamp(p.get("time",0)/1000).strftime("%m/%d %H:%M")
-                 if p.get("time") else "—")
-            lines.append(f"{icon} {p.get('amount',0)} ብር — {t}")
+
+        # Deposits — ቅርብ 7
+        if deposits:
+            deposits.sort(key=lambda x: x.get("time", 0), reverse=True)
+            lines.append("💳 <b>ገንዘብ ማስገቢያ:</b>")
+            for p in deposits[:7]:
+                icon = dep_icons.get(p.get("status"), "❓")
+                amt  = p.get("sms_amount") or p.get("requested_amount") or p.get("amount") or 0
+                t    = (datetime.fromtimestamp(p.get("time", 0) / 1000).strftime("%m/%d %H:%M")
+                        if p.get("time") else "—")
+                lines.append(f"  {icon} {amt} ብር — {t}")
+
+        # Withdrawals — ቅርብ 7
+        if withdrawals:
+            lines.append("\n🏧 <b>ገንዘብ ማውጣት:</b>")
+            withdrawals.sort(
+                key=lambda x: x.get("time", ""),
+                reverse=True
+            )
+            for w in withdrawals[:7]:
+                icon   = wd_icons.get(w.get("status"), "⏳")
+                amt    = w.get("amount", 0)
+                method = w.get("method", "")
+                t      = w.get("time", "—")
+                if t and t != "—":
+                    try:
+                        t = datetime.fromisoformat(t).strftime("%m/%d %H:%M")
+                    except:
+                        t = t[:16]
+                lines.append(f"  {icon} {amt} ብር — {method} — {t}")
+
         bot.send_message(c.message.chat.id, "\n".join(lines))
 
     elif data == "referral":
@@ -1600,54 +1640,54 @@ threading.Thread(target=notification_listener, daemon=True).start()
 # ══════════════════════════════════════════
 # TIMEOUT CHECKER
 # ══════════════════════════════════════════
-# ══════════════════════════════════════════
-# TIMEOUT CHECKER
-# ══════════════════════════════════════════
-MATCH_TIMEOUT       = 20 * 60  # 20 ደቂቃ — SMS ሳይደርስ ለቆሙ payments
-PHOTO_POOL_TIMEOUT  = 15 * 60  # 15 ደቂቃ — Screenshot ደርሶ SMS ይጠብቅ
+MATCH_TIMEOUT      = 20 * 60  # 20 ደቂቃ
+PHOTO_POOL_TIMEOUT = 20 * 60  # 20 ደቂቃ
+
+_cancelled_pids = set()  # አንድ ጊዜ cancel የሆኑ PIDs — ድጋሚ አይሰሩም
+_cancelled_lock = threading.Lock()
 
 def timeout_checker():
     while True:
         try:
             now_ts = datetime.now().timestamp()
 
-            # ── 1. Photo pool timeout (screenshot ደርሶ SMS ሳይደርስ 15 ደቂቃ) ──
+            # ── 1. Photo pool timeout ──
             photo_pool = db_get("bot/photo_pool") or {}
             seen_pids  = set()
             for ref_key, entry in list(photo_pool.items()):
                 if not isinstance(entry, dict): continue
-                saved_at = entry.get("saved_at", 0)
-                if now_ts - saved_at < PHOTO_POOL_TIMEOUT: continue
-                pid  = entry.get("pid")
-                uid  = str(entry.get("uid", ""))
-                req  = int(float(entry.get("amount", 0) or 0))
-                if pid in seen_pids: continue
-                seen_pids.add(pid)
-                # pool entries ሁሉ አጥፋ
+                if now_ts - entry.get("saved_at", 0) < PHOTO_POOL_TIMEOUT: continue
+                pid = entry.get("pid")
+                uid = str(entry.get("uid", ""))
+                if not pid or not uid: continue
+                with _cancelled_lock:
+                    if pid in _cancelled_pids: continue
+                    if pid in seen_pids: continue
+                    seen_pids.add(pid)
+                    _cancelled_pids.add(pid)
                 for r in (entry.get("all_refs") or [ref_key]):
                     db_delete(f"bot/photo_pool/{r.upper()}")
-                # payment cancel
                 db_set(f"payments/{pid}/status", "cancelled")
                 set_temp(uid, None)
                 try:
                     bot.send_message(int(uid),
-                        f"⏰ <b>ገنዘብ ማስገቢያ ተሰርዟል!</b>\n\n"
+                        f"⏰ <b>ገንዘብ ማስገቢያ ተሰርዟል!</b>\n\n"
                         f"⚠️ SMS 15 ደቂቃ ውስጥ አልደረሰም\n\nእንደገና ሞክር 👇")
                     send_menu(int(uid))
                 except: pass
                 bot.send_message(ADMIN_ID,
-                    f"⏰ <b>Photo Pool Timeout</b>\n\n"
-                    f"👤 <code>{uid}</code>\n"
-                    f"📋 REF: <code>{ref_key}</code>\n"
-                    f"⚠️ SMS 15 ደቂቃ ውስጥ አልደረሰም")
+                    f"⏰ <b>Photo Pool Timeout</b>\n"
+                    f"👤 <code>{uid}</code> | REF: <code>{ref_key}</code>")
 
-            # ── 2. Payment timeout (screenshot ሳይደርስ 20 ደቂቃ) ──
+            # ── 2. Payment timeout ──
             payments = db_get("payments") or {}
             for pid, pay in list(payments.items()):
                 if not isinstance(pay, dict): continue
                 if pay.get("status") != "pending": continue
-                created = pay.get("time", 0) / 1000
-                if now_ts - created < MATCH_TIMEOUT: continue
+                if now_ts - pay.get("time", 0) / 1000 < MATCH_TIMEOUT: continue
+                with _cancelled_lock:
+                    if pid in _cancelled_pids: continue
+                    _cancelled_pids.add(pid)
                 uid     = str(pay.get("user_id"))
                 ref     = pay.get("ref", "")
                 display = pay.get("display") or uid
@@ -1663,12 +1703,12 @@ def timeout_checker():
                     send_menu(int(uid))
                 except: pass
                 bot.send_message(ADMIN_ID,
-                    f"⏰ <b>Timeout — ተሰርዟል</b>\n\n"
-                    f"👤 {display} (<code>{uid}</code>)\n"
-                    f"📋 REF: <code>{ref}</code>")
+                    f"⏰ <b>Timeout — ተሰርዟል</b>\n"
+                    f"👤 {display} (<code>{uid}</code>) | REF: <code>{ref}</code>")
+
         except Exception as e:
             print(f"Timeout checker error: {e}")
-        time.sleep(30)
+        time.sleep(60)  # 30→60sec: ብዙ DB calls ይቀንሳሉ
 
 threading.Thread(target=timeout_checker, daemon=True).start()
 
@@ -1737,6 +1777,67 @@ def daily_report_loop():
             print(f"Daily report error: {e}")
 
 threading.Thread(target=daily_report_loop, daemon=True).start()
+
+# ══════════════════════════════════════════
+# 2-DAY CLEANUP LOOP
+# payments, withdrawals, sms_pool, photo_pool — 2 ቀን ያለፋቸው ይጸዳሉ
+# ══════════════════════════════════════════
+CLEANUP_AGE = 2 * 24 * 60 * 60  # 2 ቀን በሰከንድ
+
+def cleanup_loop():
+    while True:
+        try:
+            now_ts = datetime.now().timestamp()
+
+            # ── Payments (cancelled/rejected/approved + stale pending) ──
+            payments = db_get("payments") or {}
+            for pid, pay in list(payments.items()):
+                if not isinstance(pay, dict): continue
+                age = now_ts - pay.get("time", 0) / 1000
+                if pay.get("status") == "pending":
+                    # Pending deposit 1 ሰዓት ካለፈ → timeout checker ያመለጠው → አጸዳ
+                    if age > 3600:
+                        db_delete(f"payments/{pid}")
+                elif age > CLEANUP_AGE:
+                    db_delete(f"payments/{pid}")
+
+            # ── Withdrawals — pending አይጸዳም (admin ማየት አለበት) ──
+            withdrawals = db_get("bot/withdrawals") or {}
+            for wid, w in list(withdrawals.items()):
+                if not isinstance(w, dict): continue
+                if w.get("status") == "pending": continue
+                try:
+                    t = w.get("time", "")
+                    if not t: continue
+                    ts = datetime.fromisoformat(t).timestamp()
+                    if now_ts - ts > CLEANUP_AGE:
+                        db_delete(f"bot/withdrawals/{wid}")
+                except: continue
+
+            # ── SMS pool (unmatched) ──
+            sms_pool = db_get("bot/sms_pool") or {}
+            for ref_key, entry in list(sms_pool.items()):
+                if not isinstance(entry, dict): continue
+                saved_at = entry.get("saved_at", 0)
+                if now_ts - saved_at > CLEANUP_AGE:
+                    db_delete(f"bot/sms_pool/{ref_key}")
+
+            # ── Photo pool (unmatched) ──
+            photo_pool = db_get("bot/photo_pool") or {}
+            for ref_key, entry in list(photo_pool.items()):
+                if not isinstance(entry, dict): continue
+                saved_at = entry.get("saved_at", 0)
+                if now_ts - saved_at > CLEANUP_AGE:
+                    db_delete(f"bot/photo_pool/{ref_key}")
+
+            print(f"✅ Cleanup done — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+
+        time.sleep(24 * 60 * 60)  # ቀን 1 ጊዜ ይሰራል
+
+threading.Thread(target=cleanup_loop, daemon=True).start()
 
 # ══════════════════════════════════════════
 # START POLLING
