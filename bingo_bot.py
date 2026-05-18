@@ -497,11 +497,6 @@ def handle_sms(sms_text):
 
         amount = extract_amount(sms_text)
 
-        for ref in refs:
-            if is_dup_ref(ref):
-                bot.send_message(ADMIN_ID, f"⚠️ Duplicate SMS REF: <code>{ref}</code>")
-                return
-
         payments = db_get("payments") or {}
         matched_pid = matched_uid = matched_ref = None
 
@@ -516,11 +511,15 @@ def handle_sms(sms_text):
                 break
 
         if matched_pid and matched_uid:
+            for ref in refs:
+                if is_dup_ref(ref):
+                    bot.send_message(ADMIN_ID, f"⚠️ Duplicate SMS REF: <code>{ref}</code>")
+                    return
             for ref in refs: save_ref(ref, matched_uid, amount)
             do_approve(matched_pid, matched_uid, amount, matched_ref, sms_text)
             return
 
-        photo_pool = db_get("bot/photo_pool") or {}
+        photo_pool = {k.upper(): v for k, v in (db_get("bot/photo_pool") or {}).items()}
         matched_photo = matched_photo_ref = None
         for ref in refs:
             if ref.upper() in photo_pool:
@@ -529,6 +528,10 @@ def handle_sms(sms_text):
                 break
 
         if matched_photo:
+            for ref in refs:
+                if is_dup_ref(ref):
+                    bot.send_message(ADMIN_ID, f"⚠️ Duplicate SMS REF: <code>{ref}</code>")
+                    return
             for r in (matched_photo.get("all_refs") or [matched_photo_ref]):
                 db_delete(f"bot/photo_pool/{r.upper()}")
             for ref in refs: save_ref(ref, matched_photo["uid"], amount)
@@ -767,14 +770,14 @@ def process_screenshot(m):
     update_temp(uid, "pid", pid)
     update_temp(uid, "ref", primary_ref)
 
-    sms_pool = db_get("bot/sms_pool") or {}
+    sms_pool = {k.upper(): v for k, v in (db_get("bot/sms_pool") or {}).items()}
     matched_sms = matched_sms_ref = None
     for ref in refs:
         if ref.upper() in sms_pool:
             matched_sms     = sms_pool[ref.upper()]
             matched_sms_ref = ref.upper()
             break
-
+            
     if matched_sms:
         for r in (matched_sms.get("all_refs") or [matched_sms_ref]):
             db_delete(f"bot/sms_pool/{r.upper()}")
