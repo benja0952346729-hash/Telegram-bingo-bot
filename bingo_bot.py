@@ -489,6 +489,9 @@ def save_account(uid, method, account):
 # ══════════════════════════════════════════
 def handle_sms(sms_text):
     try:
+        # Newline ያለባቸው REFs አስተካክል
+        sms_text = re.sub(r'((?:DE|FT)[A-Z0-9]{2,8})\n([A-Z0-9]{3,8})', r'\1\2', sms_text)
+        
         refs = extract_refs(sms_text)
         if not refs:
             bot.send_message(ADMIN_ID,
