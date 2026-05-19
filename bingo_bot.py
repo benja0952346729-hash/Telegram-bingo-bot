@@ -489,7 +489,10 @@ def save_account(uid, method, account):
 # ══════════════════════════════════════════
 def handle_sms(sms_text):
     try:
-        # REF newline ባለበት ቦታ ሁሉ አጣምር
+        # ── URL line break አጣምር ──
+        sms_text = re.sub(r'(https?://\S+)\s*\n\s*(/\S+)', r'\1\2', sms_text)
+        
+        # ── FT/DE line break አጣምር ──
         sms_text = re.sub(r'((?:DE|FT)[A-Z0-9]*)\n([A-Z0-9]+)', r'\1\2', sms_text)
         
         refs = extract_refs(sms_text)
@@ -944,7 +947,9 @@ def cmd_start(m):
     uid  = str(m.chat.id)
     args = m.text.split()
     referrer_uid = None
-    display = m.from_user.first_name or m.from_user.username or uid
+    first = m.from_user.first_name or ""
+    last  = m.from_user.last_name  or ""
+    display = (first + " " + last).strip() or m.from_user.username or uid
 
     if len(args) > 1 and args[1].startswith("deposit_"):
         try:
@@ -973,7 +978,8 @@ def cmd_start(m):
         referrer_uid = args[1][3:]
 
     is_new, balance = ensure_user(uid, display)
-
+    db_set(f"displayNames/{uid}", display)
+    db_set(f"users/{uid}/display", display)
     if is_new:
         db_set(f"users/{uid}/display",   display)
         db_set(f"users/{uid}/username",  display)
@@ -1085,6 +1091,20 @@ def clear_pending(m):
             count += 1
     bot.send_message(m.chat.id,
         f"✅ User <code>{uid}</code> cleared!\n📋 {count} pending cancelled.")
+
+@bot.message_handler(commands=["fixdisplaynames"])
+def fix_display_names(m):
+    if m.chat.id != ADMIN_ID: return
+    bot.send_message(m.chat.id, "⏳ እየሰራ ነው...")
+    users = db_get("users") or {}
+    fixed = 0
+    for uid, data in users.items():
+        if not uid.isdigit(): continue
+        name = (data.get("display") or data.get("username") or "").strip()
+        if name and name != uid:
+            db_set(f"displayNames/{uid}", name)
+            fixed += 1
+    bot.send_message(m.chat.id, f"✅ {fixed} users fixed!")
 
 @bot.message_handler(commands=["givebalance"])
 def cmd_give_balance(m):
@@ -1666,6 +1686,14 @@ def timeout_checker():
                 pid = entry.get("pid")
                 uid = str(entry.get("uid", ""))
                 if not pid or not uid: continue
+
+                # ✅ አስቀድሞ approved ከሆነ — entry ብቻ አጸዳ
+                pay_status = (db_get(f"payments/{pid}") or {}).get("status", "")
+                if pay_status in ("approved", "cancelled", "rejected"):
+                    for r in (entry.get("all_refs") or [ref_key]):
+                        db_delete(f"bot/photo_pool/{r.upper()}")
+                    continue
+
                 with _cancelled_lock:
                     if pid in _cancelled_pids: continue
                     if pid in seen_pids: continue
@@ -1678,7 +1706,7 @@ def timeout_checker():
                 try:
                     bot.send_message(int(uid),
                         f"⏰ <b>ገንዘብ ማስገቢያ ተሰርዟል!</b>\n\n"
-                        f"⚠️ SMS 15 ደቂቃ ውስጥ አልደረሰም\n\nእንደገና ሞክር 👇")
+                        f"⚠️ SMS 20 ደቂቃ ውስጥ አልደረሰም\n\nእንደገና ሞክር 👇")
                     send_menu(int(uid))
                 except: pass
                 bot.send_message(ADMIN_ID,
