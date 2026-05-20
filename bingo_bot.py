@@ -1683,14 +1683,18 @@ def notification_listener():
             notifs = r.json()
             for n in notifs:
                 if not str(n["uid"]).isdigit(): continue
+                if len(str(n["uid"])) < 5: continue
                 try:
                     uid = str(n["uid"])
                     msg = n["message"]
                     if any(kw in msg for kw in ["withdrawal","ብር withdrawal","ተፈቀደ","rejected","ተመለሰ"]):
                         db_set(f"users/{uid}/pending_withdrawal", 0)
-                    bot.send_message(int(uid), msg)
+                    try:
+                       bot.send_message        (int(uid), msg)
+                    except:
+                        pass
                     requests.post(f"{SERVER}/mark-notification-read",
-                        json={"id": n["id"]}, timeout=5)
+                        json={"id":         n["id"]}, timeout=5)
                 except Exception as e:
                     print(f"Notify error {n['uid']}: {e}")
         except Exception as e:
