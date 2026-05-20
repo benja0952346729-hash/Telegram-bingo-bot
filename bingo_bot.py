@@ -1160,11 +1160,11 @@ def handle_text(m):
     text  = m.text.strip()
     state = get_botstate(uid)
     
-    # ── DEBUG ──
     if m.forward_date and m.from_user.id == ADMIN_ID:
-        bot.send_message(ADMIN_ID,
-            f"🔍 <b>Forward Debug:</b>\n"
-            f"<code>{repr(text[:300])}</code>")
+        text_to_process = m.text or m.caption or ""
+        if text_to_process:
+            threading.Thread(target=handle_sms, args=(text_to_process,), daemon=True).start()
+        return
 
     print(f"ID:{m.from_user.id} STATE:{repr(state)} TEXT:{text[:50]}")
     
