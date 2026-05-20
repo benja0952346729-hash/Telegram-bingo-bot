@@ -1,9 +1,0 @@
-[phases.install]
-cmds = ["npm install"]
-
-
-[phases.setup]
-nixPkgs = ["nodejs_20", "python311"]
-
-[start]
-cmd = "node sms-forwarder-server.js & python bingo_bot.py"
