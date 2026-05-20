@@ -152,6 +152,7 @@ const server = http.createServer((req, res) => {
   res.end('Not found');
 });
 
+
 server.listen(PORT, () => {
   console.log(`🚀 SMS Forwarder running on port ${PORT}`);
   console.log(`📡 BOT_URL: ${BOT_URL || '❌ NOT SET'}`);
