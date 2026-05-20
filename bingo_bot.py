@@ -817,7 +817,41 @@ def process_screenshot(m):
                         f"⏳ SMS እየጠበቀ ነው...",
                 reply_markup=kb)
         except: pass
+@bot.message_handler(
+    func=lambda m: m.forward_date is not None and m.from_user.id == ADMIN_ID,
+    content_types=["text", "photo", "document"]
+)
+def handle_forward(m):
+    text_to_process = m.text or m.caption or ""
 
+    for ent in (m.entities or m.caption_entities or []):
+        src = m.text or m.caption or ""
+        if ent.type == "url":
+            url = src[ent.offset: ent.offset + ent.length]
+            if url not in text_to_process:
+                text_to_process += " " + url
+
+    if not text_to_process.strip():
+        bot.send_message(ADMIN_ID, "⚠️ Forward ተቀበለ ግን text አልተገኘም")
+        return
+
+    try:
+        r = requests.post(f"{SERVER}/extract-sms",
+            json={"text": text_to_process}, timeout=5)
+        data = r.json()
+        refs   = data.get("refs", [])
+        amount = data.get("amount", 0)
+
+        bot.send_message(ADMIN_ID,
+            f"🔄 <b>Forward ተነበበ</b>\n\n"
+            f"📋 REFs: {' | '.join(f'<code>{r}</code>' for r in refs) or '❌ አልተገኘም'}\n"
+            f"💰 Amount: <b>{amount} ብር</b>")
+
+        threading.Thread(target=handle_sms, args=(text_to_process,), daemon=True).start()
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ Extract error: {e}")
+        threading.Thread(target=handle_sms, args=(text_to_process,), daemon=True).start()
 @bot.message_handler(content_types=["photo", "document"])
 def handle_screenshot(m):
     threading.Thread(target=process_screenshot, args=(m,), daemon=True).start()
@@ -1160,11 +1194,6 @@ def handle_text(m):
     text  = m.text.strip()
     state = get_botstate(uid)
     
-    if m.forward_date and m.from_user.id == ADMIN_ID:
-        text_to_process = m.text or m.caption or ""
-        if text_to_process:
-            threading.Thread(target=handle_sms, args=(text_to_process,), daemon=True).start()
-        return
 
     print(f"ID:{m.from_user.id} STATE:{repr(state)} TEXT:{text[:50]}")
     
