@@ -1,8 +1,0 @@
-{
-  "name": "sms-forwarder",
-  "version": "1.0.0",
-  "main": "sms-forwarder-server.js",
-  "scripts": {
-    "start": "node sms-forwarder-server.js"
-  }
-}
