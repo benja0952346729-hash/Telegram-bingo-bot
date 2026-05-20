@@ -1159,8 +1159,20 @@ def handle_text(m):
     uid   = str(m.from_user.id)
     text  = m.text.strip()
     state = get_botstate(uid)
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_text(m):
+    uid   = str(m.from_user.id)
+    text  = m.text.strip()
+    state = get_botstate(uid)
+
+    # ── DEBUG ──
+    if m.forward_date and m.from_user.id == ADMIN_ID:
+        bot.send_message(ADMIN_ID,
+            f"🔍 <b>Forward Debug:</b>\n"
+            f"<code>{repr(text[:300])}</code>")
 
     print(f"ID:{m.from_user.id} STATE:{repr(state)} TEXT:{text[:50]}")
+    
 
     if m.from_user.id in ALLOWED_SMS_SENDERS and is_bank_sms(text):
         threading.Thread(target=handle_sms, args=(text,), daemon=True).start()
