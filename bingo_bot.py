@@ -1159,12 +1159,7 @@ def handle_text(m):
     uid   = str(m.from_user.id)
     text  = m.text.strip()
     state = get_botstate(uid)
-@bot.message_handler(func=lambda m: True, content_types=["text"])
-def handle_text(m):
-    uid   = str(m.from_user.id)
-    text  = m.text.strip()
-    state = get_botstate(uid)
-
+    
     # ── DEBUG ──
     if m.forward_date and m.from_user.id == ADMIN_ID:
         bot.send_message(ADMIN_ID,
