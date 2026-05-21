@@ -1,5 +1,4 @@
 pyTelegramBotAPI
-firebase-admin
 flask
-Pillow
 requests
+Pillow
