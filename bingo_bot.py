@@ -28,8 +28,8 @@ from flask import Flask, request as flask_request, jsonify
 # ══════════════════════════════════════════
 BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID   = 6883208728
-WEBAPP_URL = "https://game-production-7f86.up.railway.app"
-SERVER     = os.environ.get("SERVER_URL", "https://admin-panel-production-b31a.up.railway.app")
+WEBAPP_URL = "https://game-owkt.onrender.com"
+SERVER_URL = https://admin-panel-0cmo.onrender.com
 
 MIN_WITHDRAWAL = 50
 
