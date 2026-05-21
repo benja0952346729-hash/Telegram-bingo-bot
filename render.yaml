@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: bingo-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bingo_bot.py
+
+  - type: worker
+    name: sms-forwarder
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python sms_forwarder.py
